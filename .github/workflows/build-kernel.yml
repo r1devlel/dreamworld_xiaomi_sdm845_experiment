@@ -1,4 +1,4 @@
-name: Dreamworld SDM845 Kernel Build
+name: Dreamworld Mi 8 Kernel Build
 
 on:
   workflow_dispatch:
@@ -23,7 +23,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y             bc             bison             build-essential             clang-14             cpio             device-tree-compiler             flex             gcc-aarch64-linux-gnu             libelf-dev             libssl-dev             lld-14             llvm-14             python3             rsync             unzip
+          sudo apt-get install -y \
+            bc bison build-essential clang-14 cpio flex gcc-aarch64-linux-gnu \
+            libelf-dev libssl-dev lld-14 llvm-14 python3 rsync unzip
 
       - name: Show toolchain
         run: |
@@ -37,7 +39,7 @@ jobs:
           rm -rf out
           mkdir -p out
 
-      - name: Configure SDM845 kernel
+      - name: Configure SDM845 baseline
         env:
           ARCH: arm64
           CROSS_COMPILE: aarch64-linux-gnu-
@@ -47,11 +49,10 @@ jobs:
             CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
             OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 \
             STRIP=llvm-strip-14 sdm845-perf_defconfig
-
           make O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang-14 LD=ld.lld-14 olddefconfig
 
-      - name: Build kernel and DTBs
+      - name: Build kernel image
         env:
           ARCH: arm64
           CROSS_COMPILE: aarch64-linux-gnu-
@@ -60,25 +61,25 @@ jobs:
           make -j2 O=out ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- \
             CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 \
             OBJCOPY=llvm-objcopy-14 OBJDUMP=llvm-objdump-14 \
-            STRIP=llvm-strip-14 Image dtbs
+            STRIP=llvm-strip-14 Image
 
-      - name: Verify artifacts
+      - name: Verify kernel image
         run: |
           test -s out/arch/arm64/boot/Image
-          find out/arch/arm64/boot/dts -type f -name '*.dtb' | head -20
+          file out/arch/arm64/boot/Image
           ls -lh out/arch/arm64/boot/Image
+          grep -E 'CONFIG_ARCH_SDM845=|CONFIG_ARM64=' out/.config
 
-      - name: Package build artifacts
+      - name: Package baseline artifact
         run: |
           mkdir -p artifact
           cp out/arch/arm64/boot/Image artifact/Image
-          find out/arch/arm64/boot/dts -type f -name '*.dtb' -exec cp --parents {} artifact/ \;
           cp out/.config artifact/kernel.config
-          tar -czf dreamworld-sdm845-4.9.337-build.tar.gz -C artifact .
+          tar -czf dreamworld-sdm845-4.9.337-baseline.tar.gz -C artifact .
 
-      - name: Upload kernel artifact
+      - name: Upload baseline artifact
         uses: actions/upload-artifact@v4
         with:
-          name: dreamworld-sdm845-4.9.337
-          path: dreamworld-sdm845-4.9.337-build.tar.gz
+          name: dreamworld-sdm845-4.9.337-baseline
+          path: dreamworld-sdm845-4.9.337-baseline.tar.gz
           if-no-files-found: error
