@@ -54,7 +54,7 @@
 - The target `include/linux/bpf.h`, `include/uapi/linux/bpf.h`, and `kernel/bpf/verifier.c` are substantially older/smaller than the reference (about 1,016 vs 2,037 header lines, 2,284 vs 4,881 UAPI lines, and 10,161 vs 12,803 verifier lines). Do not replace them wholesale.
 - ARM64 JIT source audit: target and donor `arch/arm64/net/bpf_jit_comp.c` are both around 1,000 lines and share the same core register mapping and emission architecture, but have non-identical lifecycle/helper code. The target has `arch_bpf_jit_check_func()` and a different JIT symbol-registration layout; donor has `bpf_jit_free_exec()` and newer core-side symbol/JIT-poke plumbing. Do not replace the JIT file wholesale; trace each changed helper against `kernel/bpf/core.c`, executable-memory allocation/freeing, kallsym registration, and the target's 4.9 APIs before porting any JIT changes.
 - CI run #14 job steps all succeeded, including `Configure for Xiaomi Mi 8`, `Compile kernel and device trees`, `Diagnose BPF, RCU, and XDP build state`, and artifact upload. Artifact `dipper-kernel-bpf-port-14` exists (about 33 MB).
-- `PAGE_POOL` is nested inside `if NET`; `page_pool.o` is conditionally built and enabled in the dipper defconfig. The XDP/page-pool stage compiles, but runtime DMA ownership/recycling still needs device-level validation.
+- `PAGE_POOL` is nested inside `if NET` and `page_pool.o` is conditionally built. Run #14's diagnostic reported `out/net/core/page_pool.o` missing, and `CONFIG_PAGE_POOL=y` was absent from `arch/arm64/configs/droidspaces.config`. Stage 2 therefore explicitly enables the symbol and makes CI assert both the final config and object file. Runtime DMA ownership/recycling still needs device-level validation.
 - Next implementation decision: define the concrete feature set to backport (for example, XDP/page_pool stability vs. newer BPF trampoline/struct_ops/iterators) and map each requested feature to its complete dependency chain before touching kernel source.
 
 ## Current status
@@ -65,3 +65,9 @@
 - Adapted the DMA-address accessor to Linux 4.9's `page_private()` storage because this target's `struct page` has no `dma_addr` member.
 - Updated the manual GitHub Actions workflow to check out the selected ref (`github.ref`) so a run can build this branch.
 - CI compile validation has succeeded in runs #13 and #14. Next step is runtime/semantic validation and feature-scoped dependency mapping, not treating a successful build as proof of complete eBPF support.
+
+
+### Stage 2.1: enforce page-pool build coverage
+- Added `CONFIG_PAGE_POOL=y` to the merged DroidSpaces config because the prior CI diagnostic showed the object was not built.
+- Added a hard CI check for `CONFIG_PAGE_POOL=y` and `out/net/core/page_pool.o`, so a green kernel build cannot silently omit the allocator foundation.
+- This remains compile-time validation only; hardware DMA/recycle semantics require runtime/device testing.

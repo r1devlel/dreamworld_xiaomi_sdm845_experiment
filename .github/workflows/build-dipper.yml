@@ -81,7 +81,7 @@ jobs:
           echo "=== Relevant final configuration ==="
           echo "=== Required BPF config ==="
           grep -E '^(CONFIG_(CGROUP_BPF|BPF|BPF_SYSCALL|BPF_JIT_ALWAYS_ON|NETFILTER_XT_MATCH_BPF|NET_CLS_BPF|BPF_JIT|HAVE_EBPF_JIT)=|# CONFIG_(CGROUP_BPF|BPF|BPF_SYSCALL|BPF_JIT_ALWAYS_ON|NETFILTER_XT_MATCH_BPF|NET_CLS_BPF|BPF_JIT|HAVE_EBPF_JIT) is not set)' out/.config || true
-          for symbol in CONFIG_CGROUP_BPF CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT_ALWAYS_ON CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NET_CLS_BPF CONFIG_BPF_JIT CONFIG_HAVE_EBPF_JIT; do
+          for symbol in CONFIG_CGROUP_BPF CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT_ALWAYS_ON CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NET_CLS_BPF CONFIG_BPF_JIT CONFIG_HAVE_EBPF_JIT CONFIG_PAGE_POOL; do
             if ! grep -qx "${symbol}=y" out/.config; then
               echo "::error::Required kernel config is missing: ${symbol}=y"
               exit 1
@@ -102,6 +102,8 @@ jobs:
 
           test -s out/arch/arm64/boot/Image.gz-dtb
           ls -lh out/arch/arm64/boot/Image.gz-dtb
+          test -s out/net/core/page_pool.o
+          echo "PAGE_POOL object compiled successfully."
 
       - name: Diagnose BPF, RCU, and XDP build state
         if: always()
