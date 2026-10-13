@@ -286,12 +286,13 @@ static int htab_map_alloc_check(union bpf_attr *attr)
 		 */
 		return -E2BIG;
 
-	if ((u64)attr->key_size + attr->value_size >=
+	if (round_up((u64)attr->key_size, 8) +
+	    round_up((u64)attr->value_size, 8) >=
 	    KMALLOC_MAX_SIZE - sizeof(struct htab_elem))
-		/* if key_size + value_size is bigger, the user space won't be
-		 * able to access the elements via bpf syscall. This check also
-		 * makes sure that the elem_size doesn't overflow and it's
-		 * kmalloc-able later in htab_map_update_elem()
+		/* if the aligned key and value are too large, user space
+		 * cannot access the elements via bpf syscall. This check also
+		 * makes sure that elem_size stays kmalloc-able later in
+		 * htab_map_update_elem().
 		 */
 		return -E2BIG;
 
