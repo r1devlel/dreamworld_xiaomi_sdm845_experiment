@@ -65,15 +65,41 @@ jobs:
           grep -E 'CONFIG_(MACH_XIAOMI|MACH_XIAOMI_SDM845|ARCH_SDM845|BPF_SYSCALL|BUILD_ARM64_APPENDED_DTB_IMAGE)=' out/.config || true
 
       - name: Compile kernel and device trees
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
+          mkdir -p out
+          echo "Starting kernel build. Full, unfiltered output will be saved to out/build.log."
+
+          # Keep the full log for debugging, but hide only this known repetitive
+          # objdump warning from the live Actions output. Real errors remain visible.
+          set +e
           make -j"$(nproc)" O=out \
             ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz-dtb
+            Image.gz-dtb 2>&1 \
+            | tee out/build.log \
+            | grep --line-buffered -vF 'aarch64-linux-gnu-objdump: Warning: Unrecognized form: 0x22'
+          build_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$build_status" -ne 0 ]; then
+            echo "::error::Kernel build failed (exit code $build_status). Showing recent log lines with the repetitive objdump warning filtered out:"
+            grep -vF 'aarch64-linux-gnu-objdump: Warning: Unrecognized form: 0x22' out/build.log | tail -n 100 || true
+            exit "$build_status"
+          fi
 
           test -s out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Upload full build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dipper-build-log-${{ github.run_number }}
+          path: out/build.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
