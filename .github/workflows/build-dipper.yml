@@ -1,6 +1,9 @@
 name: Build Xiaomi Mi 8 (dipper) kernel
 
 on:
+  push:
+    branches:
+      - bpf-port-mido-stage1
   workflow_dispatch:
 
 permissions:
