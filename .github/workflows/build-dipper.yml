@@ -12,8 +12,8 @@ concurrency:
 
 jobs:
   build:
-    name: Compile kernel (Linux 4.9 / SDM845)
-    runs-on: ubuntu-22.04
+    name: Compile kernel (Linux 4.9 / SDM845 / BPF port)
+    runs-on: ubuntu-24.04
     timeout-minutes: 180
 
     steps:
@@ -27,22 +27,28 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential cpio flex git libelf-dev libssl-dev \
-            clang lld llvm gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            python3 python-is-python3 rsync
+            bc bison build-essential binutils-aarch64-linux-gnu cpio flex git \
+            libelf-dev libncurses-dev libssl-dev clang-18 lld-18 llvm-18 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 python-is-python3 \
+            rsync dwarves pahole
 
-      - name: Show source and compiler versions
+      - name: Show source and toolchain versions
         run: |
+          set -euxo pipefail
+          git rev-parse --short HEAD
           grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile
-          clang --version
+          clang-18 --version
+          ld.lld-18 --version
+          llvm-nm-18 --version
           aarch64-linux-gnu-gcc --version | head -n 1
           arm-linux-gnueabi-gcc --version | head -n 1
+          make --version | head -n 1
 
       - name: Configure for Xiaomi Mi 8
         run: |
           set -euxo pipefail
           export ARCH=arm64
-          export CC=clang
+          export CC=clang-18
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
@@ -51,7 +57,9 @@ jobs:
             ARCH="$ARCH" CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            vendor/xiaomi/mi845_defconfig
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 vendor/xiaomi/mi845_defconfig
 
           scripts/kconfig/merge_config.sh -m -O out out/.config \
             arch/arm64/configs/vendor/xiaomi/dipper.config
@@ -60,26 +68,84 @@ jobs:
             ARCH="$ARCH" CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
             CROSS_COMPILE="$CROSS_COMPILE" \
             CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
-            olddefconfig
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 olddefconfig
 
-          grep -E 'CONFIG_(MACH_XIAOMI|MACH_XIAOMI_SDM845|ARCH_SDM845|BPF_SYSCALL|BUILD_ARM64_APPENDED_DTB_IMAGE)=' out/.config || true
+          echo "=== Relevant final configuration ==="
+          grep -E '^(CONFIG_(MACH_XIAOMI|MACH_XIAOMI_SDM845|ARCH_SDM845|BPF|BPF_SYSCALL|BPF_JIT|PAGE_POOL|XDP|BUILD_ARM64_APPENDED_DTB_IMAGE)=|# CONFIG_(TASKS_RCU|BPF_SYSCALL|BPF_JIT) is not set)' out/.config || true
 
       - name: Compile kernel and device trees
         run: |
           set -euxo pipefail
           make -j"$(nproc)" O=out \
-            ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            ARCH=arm64 CC=clang-18 CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz-dtb
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 V=1 Image.gz-dtb
 
           test -s out/arch/arm64/boot/Image.gz-dtb
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+
+      - name: Diagnose BPF, RCU, and XDP build state
+        if: always()
+        run: |
+          set +e
+          echo "=== Source revision ==="
+          git rev-parse --short HEAD 2>/dev/null || true
+
+          echo "=== CONFIG_TASKS_RCU in out/.config ==="
+          grep -nE '^(CONFIG_TASKS_RCU=|# CONFIG_TASKS_RCU is not set)' out/.config 2>/dev/null || true
+          echo "=== TASKS_RCU in generated auto.conf ==="
+          grep -nE 'TASKS_RCU' out/include/config/auto.conf 2>/dev/null || true
+
+          echo "=== RCU object symbols ==="
+          if test -f out/kernel/rcu/update.o; then
+            llvm-nm-18 out/kernel/rcu/update.o 2>/dev/null | grep -E 'call_rcu_tasks|rcu_tasks' || true
+          else
+            echo "MISSING out/kernel/rcu/update.o"
+          fi
+
+          echo "=== BPF trampoline symbols ==="
+          if test -f out/kernel/bpf/trampoline.o; then
+            llvm-nm-18 out/kernel/bpf/trampoline.o 2>/dev/null | grep -E 'call_rcu_tasks|bpf_dispatcher_change_prog' || true
+          else
+            echo "MISSING out/kernel/bpf/trampoline.o"
+          fi
+
+          echo "=== Relevant object files ==="
+          for f in \
+            out/kernel/bpf/trampoline.o \
+            out/kernel/bpf/dispatcher.o \
+            out/kernel/bpf/ringbuf.o \
+            out/net/core/page_pool.o \
+            out/net/core/xdp.o \
+            out/net/core/filter.o \
+            out/net/ipv4/bpf_tcp_ca.o \
+            out/net/bpf/test_run.o; do
+            if test -s "$f"; then echo "PRESENT $f"; else echo "MISSING $f"; fi
+          done
+
+          echo "=== XDP definitions in source headers ==="
+          grep -nE 'struct xdp_buff|xdp_set_data_meta_invalid|xdp_data_meta_unsupported' \
+            include/linux/filter.h include/net/xdp.h 2>/dev/null || true
+
+          echo "=== Expected kernel image ==="
+          if test -s out/arch/arm64/boot/Image.gz-dtb; then
+            ls -lh out/arch/arm64/boot/Image.gz-dtb
+          else
+            echo "MISSING out/arch/arm64/boot/Image.gz-dtb"
+          fi
 
       - name: Upload build artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: dipper-kernel-lineage-23.2-${{ github.run_number }}
+          name: dipper-kernel-bpf-port-${{ github.run_number }}
           if-no-files-found: error
+          retention-days: 7
           path: |
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
