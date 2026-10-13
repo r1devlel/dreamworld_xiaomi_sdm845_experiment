@@ -472,7 +472,7 @@ config MAY_USE_DEVLINK
 source "net/ipc_router/Kconfig"
 
 config PAGE_POOL
-	bool
+	bool "Page pool allocator"
 
 endif   # if NET
 
