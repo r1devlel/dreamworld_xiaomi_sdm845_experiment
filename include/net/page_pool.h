@@ -148,7 +148,7 @@ static inline void page_pool_release_page(struct page_pool *pool,
 
 static inline dma_addr_t page_pool_get_dma_addr(struct page *page)
 {
-	return page->dma_addr;
+	return page_private(page);
 }
 
 static inline bool is_page_pool_compiled_in(void)
