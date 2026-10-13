@@ -79,3 +79,11 @@
 - Rechecked the staged `page_pool_unmap_page()` implementation against the donor implementation of `__page_pool_clean_page()`: it uses the existing DMA-unmap/clear-private helper, matching the intended release semantics. This compile check does not validate DMA ownership or XDP recycling on actual hardware.
 - Run #19 artifact: `dipper-kernel-bpf-port-19`, about 31.4 MiB, expires 2026-10-20.
 - Next step remains feature-scoped compatibility work: choose a concrete desired feature (such as BPF trampoline/struct_ops or iterator support), map its complete 4.9 dependency chain, and add runtime tests where hardware/userspace support permits. Do not copy the donor's 5.15 BPF core wholesale.
+
+### Stage 2.3: aligned hash-element size validation
+- CI run #21 passed on commit `b4187b1a43a66444d408fa6920db08cda55919af`: https://github.com/r1devlel/dreamworld_xiaomi_sdm845_experiment/actions/runs/38453460000
+- Artifact `dipper-kernel-bpf-port-21` was uploaded successfully (32,965,554 bytes; expires 2026-10-20).
+- Reviewed the latest hash-table allocation checks after the combined key/value-size guard landed. The element layout rounds both key and value storage to 8-byte boundaries, while the guard compared their unrounded sizes.
+- Follow-up commit `dfd8fadc38abcf9776d8dd5f57dadc4d5472443f` changes the guard to calculate the aligned sizes in `u64` before comparing against `KMALLOC_MAX_SIZE`. This closes the small boundary gap without changing normal map layouts.
+- CI for this follow-up is pending; do not treat the previous green run as validation of this new change. Runtime map-create/update tests are still needed, and the original `lineage-23.2` branch remains out of scope.
+
