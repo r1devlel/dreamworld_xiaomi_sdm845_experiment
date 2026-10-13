@@ -71,3 +71,11 @@
 - Added `CONFIG_PAGE_POOL=y` to the merged DroidSpaces config because the prior CI diagnostic showed the object was not built.
 - Added a hard CI check for `CONFIG_PAGE_POOL=y` and `out/net/core/page_pool.o`, so a green kernel build cannot silently omit the allocator foundation.
 - This remains compile-time validation only; hardware DMA/recycle semantics require runtime/device testing.
+
+### Stage 2.2: hash-table allocation arithmetic audit
+- CI run #19 passed on commit `79f2e632d0259a0c9c3e1ac6fbaca79b44dd9020`; all compile and artifact-upload steps succeeded: https://github.com/r1devlel/dreamworld_xiaomi_sdm845_experiment/actions/runs/38407207915
+- The commit widens hash-element pointer-offset multiplication and preallocated element-buffer size multiplication to `u64`, avoiding intermediate 32-bit overflow.
+- Reviewed the hash-map allocation path in `kernel/bpf/hashtab.c`: it already bounds key/value sizes, rejects zero/overflowed bucket counts, computes map memory cost in `u64`, and rejects costs that exceed the map-page accounting limit. No additional arithmetic change was made without a demonstrated failing case.
+- Rechecked the staged `page_pool_unmap_page()` implementation against the donor implementation of `__page_pool_clean_page()`: it uses the existing DMA-unmap/clear-private helper, matching the intended release semantics. This compile check does not validate DMA ownership or XDP recycling on actual hardware.
+- Run #19 artifact: `dipper-kernel-bpf-port-19`, about 31.4 MiB, expires 2026-10-20.
+- Next step remains feature-scoped compatibility work: choose a concrete desired feature (such as BPF trampoline/struct_ops or iterator support), map its complete 4.9 dependency chain, and add runtime tests where hardware/userspace support permits. Do not copy the donor's 5.15 BPF core wholesale.
