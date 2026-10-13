@@ -49,4 +49,9 @@
 
 ## Current status
 - Working branch created from lineage-23.2.
-- No kernel source code has been changed yet; this file is the project checklist.
+- Added donor-derived `include/net/page_pool.h` and `net/core/page_pool.c`.
+- Wired `CONFIG_PAGE_POOL` and `page_pool.o` into Kconfig/Makefile, and enabled `CONFIG_PAGE_POOL=y` in the Mi 8 defconfig.
+- Updated `include/net/xdp.h` and `net/core/xdp.c` with allocator tracking and XDP frame return APIs.
+- Adapted the DMA-address accessor to Linux 4.9's `page_private()` storage because this target's `struct page` has no `dma_addr` member.
+- Updated the manual GitHub Actions workflow to check out the selected ref (`github.ref`) so a run can build this branch.
+- CI has not yet been run; next step is compile validation and fixing the earliest causal error.
