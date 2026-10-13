@@ -845,6 +845,7 @@ struct netdev_bpf {
 		struct {
 			u8 prog_attached;
 			u32 prog_id;
+			u32 prog_flags;
 		};
 		/* BPF_OFFLOAD_MAP_ALLOC, BPF_OFFLOAD_MAP_FREE */
 		struct {
