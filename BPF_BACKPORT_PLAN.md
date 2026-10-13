@@ -47,6 +47,14 @@
 - Fix the earliest causal error first; warnings such as objdump's unrecognized-form warning are not assumed to be fatal without evidence.
 - Keep each stage reviewable and revertible.
 
+## Stage 2 audit (2026-10-13)
+- Latest GitHub Actions run #13 passed: `Image.gz-dtb` exists and the eight required BPF config symbols are enabled. This proves the selected configuration compiles, not that the added BPF features work at runtime.
+- The target `kernel/bpf/Makefile` already builds the core verifier, maps, BTF, ring buffer, local storage, and XDP support; these are not new missing files to copy blindly.
+- Compared with the 5.15 reference Makefile, the target does not build `trampoline.o`, `dispatcher.o`, or BPF iterator objects. The reference also has newer iterator, LSM, and struct_ops-related files. These are feature gaps, not automatically safe additions: they depend on newer BPF program/link types, verifier interfaces, RCU/task lifetime rules, and kernel APIs.
+- The target `include/linux/bpf.h` and `kernel/bpf/verifier.c` are substantially older/smaller than the reference (about 1,016 vs 2,037 header lines and 10,161 vs 12,803 verifier lines). Do not replace them wholesale.
+- `PAGE_POOL` is nested inside `if NET`; `page_pool.o` is conditionally built and enabled in the dipper defconfig. The XDP/page-pool stage compiles, but runtime DMA ownership/recycling still needs device-level validation.
+- Next implementation decision: define the concrete feature set to backport (for example, XDP/page_pool stability vs. newer BPF trampoline/struct_ops/iterators) and map each requested feature to its complete dependency chain before touching kernel source.
+
 ## Current status
 - Working branch created from lineage-23.2.
 - Added donor-derived `include/net/page_pool.h` and `net/core/page_pool.c`.
