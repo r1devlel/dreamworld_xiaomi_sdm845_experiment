@@ -705,7 +705,7 @@ static void pcpu_init_value(struct bpf_htab *htab, void __percpu *pptr,
 				memset(per_cpu_ptr(pptr, cpu), 0, size);
 		}
 	} else {
-		pcpu_init_value(htab, pptr, value, onallcpus);
+		pcpu_copy_value(htab, pptr, value, onallcpus);
 	}
 }
 
