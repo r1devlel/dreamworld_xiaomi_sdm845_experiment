@@ -48,10 +48,12 @@
 - Keep each stage reviewable and revertible.
 
 ## Stage 2 audit (2026-10-13)
-- Latest GitHub Actions run #13 passed: `Image.gz-dtb` exists and the eight required BPF config symbols are enabled. This proves the selected configuration compiles, not that the added BPF features work at runtime.
+- GitHub Actions runs #13 and #14 passed. Run #14 compiled the `Image.gz-dtb` target and reported all eight required BPF config symbols enabled. This proves the selected configuration compiles, not that the added BPF features work at runtime. Run #14 job: https://github.com/r1devlel/dreamworld_xiaomi_sdm845_experiment/actions/runs/38394474666/job/115286075365
 - The target `kernel/bpf/Makefile` already builds the core verifier, maps, BTF, ring buffer, local storage, and XDP support; these are not new missing files to copy blindly.
 - Compared with the 5.15 reference Makefile, the target does not build `trampoline.o`, `dispatcher.o`, or BPF iterator objects. The reference also has newer iterator, LSM, and struct_ops-related files. These are feature gaps, not automatically safe additions: they depend on newer BPF program/link types, verifier interfaces, RCU/task lifetime rules, and kernel APIs.
-- The target `include/linux/bpf.h` and `kernel/bpf/verifier.c` are substantially older/smaller than the reference (about 1,016 vs 2,037 header lines and 10,161 vs 12,803 verifier lines). Do not replace them wholesale.
+- The target `include/linux/bpf.h`, `include/uapi/linux/bpf.h`, and `kernel/bpf/verifier.c` are substantially older/smaller than the reference (about 1,016 vs 2,037 header lines, 2,284 vs 4,881 UAPI lines, and 10,161 vs 12,803 verifier lines). Do not replace them wholesale.
+- ARM64 JIT source audit: target and donor `arch/arm64/net/bpf_jit_comp.c` are both around 1,000 lines and share the same core register mapping and emission architecture, but have non-identical lifecycle/helper code. The target has `arch_bpf_jit_check_func()` and a different JIT symbol-registration layout; donor has `bpf_jit_free_exec()` and newer core-side symbol/JIT-poke plumbing. Do not replace the JIT file wholesale; trace each changed helper against `kernel/bpf/core.c`, executable-memory allocation/freeing, kallsym registration, and the target's 4.9 APIs before porting any JIT changes.
+- CI run #14 job steps all succeeded, including `Configure for Xiaomi Mi 8`, `Compile kernel and device trees`, `Diagnose BPF, RCU, and XDP build state`, and artifact upload. Artifact `dipper-kernel-bpf-port-14` exists (about 33 MB).
 - `PAGE_POOL` is nested inside `if NET`; `page_pool.o` is conditionally built and enabled in the dipper defconfig. The XDP/page-pool stage compiles, but runtime DMA ownership/recycling still needs device-level validation.
 - Next implementation decision: define the concrete feature set to backport (for example, XDP/page_pool stability vs. newer BPF trampoline/struct_ops/iterators) and map each requested feature to its complete dependency chain before touching kernel source.
 
@@ -62,4 +64,4 @@
 - Updated `include/net/xdp.h` and `net/core/xdp.c` with allocator tracking and XDP frame return APIs.
 - Adapted the DMA-address accessor to Linux 4.9's `page_private()` storage because this target's `struct page` has no `dma_addr` member.
 - Updated the manual GitHub Actions workflow to check out the selected ref (`github.ref`) so a run can build this branch.
-- CI has not yet been run; next step is compile validation and fixing the earliest causal error.
+- CI compile validation has succeeded in runs #13 and #14. Next step is runtime/semantic validation and feature-scoped dependency mapping, not treating a successful build as proof of complete eBPF support.
