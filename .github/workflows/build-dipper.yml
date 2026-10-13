@@ -20,7 +20,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
-          ref: lineage-23.2
+          ref: ${{ github.ref }}
           fetch-depth: 1
 
       - name: Install build dependencies
