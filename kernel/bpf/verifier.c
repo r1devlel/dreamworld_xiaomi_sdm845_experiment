@@ -10112,8 +10112,12 @@ skip_full_check:
 	env->verification_time = ktime_get_ns() - start_time;
 	print_verification_stats(env);
 
-	if (log->level && bpf_verifier_log_full(log))
-		ret = -ENOSPC;
+	/*
+	 * Android: a full verifier log must not override the verifier result.
+	 * Userspace may receive a truncated log; program acceptance still
+	 * depends on the actual verifier result above.
+	 * Based on Mido donor commit 1fc8593f4215.
+	 */
 	if (log->level && !log->ubuf) {
 		ret = -EFAULT;
 		goto err_release_maps;
