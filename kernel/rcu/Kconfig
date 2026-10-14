@@ -69,7 +69,7 @@ config TREE_SRCU
 	  This option selects the full-fledged version of SRCU.
 
 config TASKS_RCU
-	bool
+	bool "Use task-based RCU" if RCU_EXPERT
 	default n
 	select SRCU
 	help
