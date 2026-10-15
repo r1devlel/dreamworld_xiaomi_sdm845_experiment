@@ -20,7 +20,10 @@
 
 #include <linux/bpf.h>
 #include <linux/filter.h>
+#include <linux/kallsyms.h>
+#include <linux/memory.h>
 #include <linux/printk.h>
+#include <linux/sizes.h>
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 
@@ -70,6 +73,15 @@ struct jit_ctx {
 	__le32 *image;
 	u32 stack_size;
 };
+
+struct bpf_plt {
+	u32 insn_ldr;
+	u32 insn_br;
+	u64 target;
+};
+
+#define PLT_TARGET_SIZE	 sizeof(u64)
+#define PLT_TARGET_OFFSET offsetof(struct bpf_plt, target)
 
 static inline void emit(const u32 insn, struct jit_ctx *ctx)
 {
@@ -181,8 +193,11 @@ static inline int epilogue_offset(const struct jit_ctx *ctx)
 /* Stack must be multiples of 16B */
 #define STACK_ALIGN(sz) (((sz) + 15) & ~15)
 
-/* Tail call offset to jump into */
-#define PROLOGUE_OFFSET 7
+/* Offset of the NOP instruction that can be patched to a trampoline call. */
+#define POKE_OFFSET 1
+
+/* Tail call offset to jump into, after the trampoline patch site. */
+#define PROLOGUE_OFFSET 9
 
 static int build_prologue(struct jit_ctx *ctx)
 {
@@ -218,6 +233,10 @@ static int build_prologue(struct jit_ctx *ctx)
 	 *                          low
 	 *
 	 */
+
+	/* Preserve the caller return address across an optional trampoline call. */
+	emit(A64_MOV(1, A64_R(9), A64_LR), ctx);
+	emit(A64_NOP, ctx);
 
 	/* Save FP and LR registers to stay align with ARM64 AAPCS */
 	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
@@ -342,6 +361,41 @@ static void build_epilogue(struct jit_ctx *ctx)
 	emit(A64_MOV(1, A64_R(0), r0), ctx);
 
 	emit(A64_RET(A64_LR), ctx);
+}
+
+void dummy_tramp(void);
+
+asm (
+"	.pushsection .text, \"ax\", @progbits\n"
+"	.type dummy_tramp, %function\n"
+"dummy_tramp:\n"
+"	mov x10, lr\n"
+"	mov lr, x9\n"
+"	ret x10\n"
+"	.size dummy_tramp, .-dummy_tramp\n"
+"	.popsection\n"
+);
+
+/*
+ * Keep a local long-jump target in each JIT image. When no trampoline is
+ * attached it points at dummy_tramp, which restores the saved LR and
+ * returns to the instruction following the patch site.
+ */
+static void build_plt(struct jit_ctx *ctx)
+{
+	const u8 tmp = bpf2a64[TMP_REG_1];
+	struct bpf_plt *plt = NULL;
+
+	/* The embedded 64-bit target must be naturally aligned. */
+	if ((ctx->idx + PLT_TARGET_OFFSET / sizeof(u32)) % 2)
+		emit(A64_NOP, ctx);
+
+	plt = (struct bpf_plt *)(ctx->image + ctx->idx);
+	emit(A64_LDR64LIT(tmp, 2 * sizeof(u32)), ctx);
+	emit(A64_BR(tmp), ctx);
+
+	if (ctx->image)
+		plt->target = (u64)&dummy_tramp;
 }
 
 /* JITs an eBPF instruction.
@@ -901,7 +955,7 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 	bool tmp_blinded = false;
 	bool extra_pass = false;
 	struct jit_ctx ctx;
-	int image_size;
+	int image_size, prog_size;
 	u8 *image_ptr;
 
 	if (!prog->jit_requested)
@@ -932,7 +986,8 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 		image_ptr = jit_data->image;
 		header = jit_data->header;
 		extra_pass = true;
-		image_size = sizeof(u32) * ctx.idx;
+		prog_size = sizeof(u32) * ctx.idx;
+		image_size = prog_size + PLT_TARGET_SIZE;
 		goto skip_init_ctx;
 	}
 	memset(&ctx, 0, sizeof(ctx));
@@ -959,9 +1014,11 @@ struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog)
 
 	ctx.epilogue_offset = ctx.idx;
 	build_epilogue(&ctx);
+	build_plt(&ctx);
 
-	/* Now we know the actual image size. */
-	image_size = sizeof(u32) * ctx.idx;
+	/* Include the inline PLT literal, but exclude it from jited_len below. */
+	prog_size = sizeof(u32) * ctx.idx;
+	image_size = prog_size + PLT_TARGET_SIZE;
 	header = bpf_jit_binary_alloc(image_size, &image_ptr,
 				      sizeof(u32), jit_fill_hole);
 	if (header == NULL) {
@@ -984,6 +1041,8 @@ skip_init_ctx:
 	}
 
 	build_epilogue(&ctx);
+	build_plt(&ctx);
+	prog_size = sizeof(u32) * ctx.idx;
 
 	/* 3. Extra pass to validate JITed code. */
 	if (validate_code(&ctx)) {
@@ -994,7 +1053,7 @@ skip_init_ctx:
 
 	/* And we're done. */
 	if (bpf_jit_enable > 1)
-		bpf_jit_dump(prog->len, image_size, 2, ctx.image);
+		bpf_jit_dump(prog->len, prog_size, 2, ctx.image);
 
 	bpf_flush_icache(header, ctx.image + ctx.idx);
 
@@ -1016,7 +1075,7 @@ skip_init_ctx:
 	}
 	prog->bpf_func = (void *)ctx.image;
 	prog->jited = 1;
-	prog->jited_len = image_size;
+	prog->jited_len = prog_size;
 
 	if (!prog->is_func || extra_pass) {
 out_off:
@@ -1029,6 +1088,108 @@ out:
 		bpf_jit_prog_release_other(prog, prog == orig_prog ?
 					   tmp : orig_prog);
 	return prog;
+}
+
+
+static bool is_long_jump(void *ip, void *target)
+{
+	long offset;
+
+	if (!target)
+		return false;
+
+	offset = (long)target - (long)ip;
+	return offset < -SZ_128M || offset >= SZ_128M;
+}
+
+static int gen_branch_or_nop(enum aarch64_insn_branch_type type, void *ip,
+			     void *addr, void *plt, u32 *insn)
+{
+	void *target;
+
+	if (!addr) {
+		*insn = aarch64_insn_gen_nop();
+		return 0;
+	}
+
+	target = is_long_jump(ip, addr) ? plt : addr;
+	*insn = aarch64_insn_gen_branch_imm((unsigned long)ip,
+					    (unsigned long)target, type);
+
+	return *insn != AARCH64_BREAK_FAULT ? 0 : -EFAULT;
+}
+
+/*
+ * Replace the branch instruction at a BPF JIT patch site. Long jumps from
+ * a BPF program use its inline PLT because module/vmalloc allocations can
+ * be farther apart than the AArch64 +/-128 MiB branch range.
+ */
+int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type poke_type,
+		       void *old_addr, void *new_addr)
+{
+	int ret;
+	u32 old_insn, new_insn, replaced;
+	struct bpf_plt *plt = NULL;
+	unsigned long size = 0, offset = ~0UL;
+	enum aarch64_insn_branch_type branch_type;
+	char namebuf[KSYM_NAME_LEN];
+	void *image;
+	u64 plt_target = 0;
+	bool poking_bpf_entry;
+
+	if (!__bpf_address_lookup((unsigned long)ip, &size, &offset, namebuf))
+		return -ENOTSUPP;
+
+	image = ip - offset;
+	poking_bpf_entry = (offset == 0);
+	if (poking_bpf_entry) {
+		plt = image + size - PLT_TARGET_OFFSET;
+		ip = image + POKE_OFFSET * sizeof(u32);
+	}
+
+	if (WARN_ON((is_long_jump(ip, new_addr) ||
+		     is_long_jump(ip, old_addr)) && !poking_bpf_entry))
+		return -EINVAL;
+
+	branch_type = poke_type == BPF_MOD_CALL ?
+		AARCH64_INSN_BRANCH_LINK : AARCH64_INSN_BRANCH_NOLINK;
+	if (gen_branch_or_nop(branch_type, ip, old_addr, plt, &old_insn) < 0)
+		return -EFAULT;
+	if (gen_branch_or_nop(branch_type, ip, new_addr, plt, &new_insn) < 0)
+		return -EFAULT;
+
+	if (is_long_jump(ip, new_addr))
+		plt_target = (u64)new_addr;
+	else if (is_long_jump(ip, old_addr))
+		plt_target = (u64)&dummy_tramp;
+
+	if (plt_target) {
+		unsigned long page = (unsigned long)&plt->target & PAGE_MASK;
+
+		if (set_memory_rw(page, 1))
+			return -EFAULT;
+		WRITE_ONCE(plt->target, plt_target);
+		if (set_memory_ro(page, 1))
+			return -EFAULT;
+	}
+
+	if (old_insn == new_insn)
+		return 0;
+
+	mutex_lock(&text_mutex);
+	if (aarch64_insn_read(ip, &replaced)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	if (replaced != old_insn) {
+		ret = -EFAULT;
+		goto out;
+	}
+
+	ret = aarch64_insn_patch_text_nosync(ip, new_insn);
+out:
+	mutex_unlock(&text_mutex);
+	return ret;
 }
 
 #ifdef CONFIG_CFI_CLANG
