@@ -1228,30 +1228,22 @@ static void emit_trampoline_call(struct jit_ctx *ctx, u64 addr)
 	emit(A64_BLR(A64_R(10)), ctx);
 }
 
-int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
-				u32 flags, struct bpf_prog **fentry_progs,
-				int fentry_cnt, struct bpf_prog **fexit_progs,
-				int fexit_cnt, void *orig_call)
+static int emit_bpf_trampoline(struct jit_ctx *ctx,
+			       struct btf_func_model *m, u32 flags,
+			       struct bpf_prog **fentry_progs,
+			       int fentry_cnt, int fexit_cnt)
 {
-	struct jit_ctx ctx = {
-		.prog = NULL,
-		.idx = 0,
-		.epilogue_offset = 0,
-		.offset = NULL,
-		.image = image,
-		.stack_size = 0,
-	};
 	int args_off = 0;
 	int regs_off;
 	int stack_size;
 	int i;
 
-	if (!image || !m || fentry_cnt < 0 || fexit_cnt < 0)
-		return -EINVAL;
 	if (flags != BPF_TRAMP_F_RESTORE_REGS || fexit_cnt)
 		return -ENOTSUPP;
 	if (fentry_cnt > BPF_MAX_TRAMP_PROGS)
 		return -E2BIG;
+	if (fentry_cnt && !fentry_progs)
+		return -EINVAL;
 	if (m->nr_args > 8)
 		return -ENOTSUPP;
 	/* Aggregate arguments can consume multiple AAPCS64 registers. */
@@ -1264,20 +1256,19 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	 * here with BL. Preserve both return addresses and maintain a 16-byte
 	 * aligned stack while the BPF programs execute.
 	 */
-	emit(A64_PUSH(A64_FP, A64_R(9), A64_SP), &ctx);
-	emit(A64_MOV(1, A64_FP, A64_SP), &ctx);
-	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), &ctx);
-	emit(A64_MOV(1, A64_FP, A64_SP), &ctx);
+	emit(A64_PUSH(A64_FP, A64_R(9), A64_SP), ctx);
+	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
+	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
+	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
 
 	regs_off = m->nr_args * sizeof(u64);
 	stack_size = round_up(regs_off + 2 * sizeof(u64), 16);
-	emit(A64_SUB_I(1, A64_SP, A64_SP, stack_size), &ctx);
+	emit(A64_SUB_I(1, A64_SP, A64_SP, stack_size), ctx);
 
 	for (i = 0; i < m->nr_args; i++)
-		emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)),
-		     &ctx);
-	emit(A64_STR64I(A64_R(19), A64_SP, regs_off), &ctx);
-	emit(A64_STR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), &ctx);
+		emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	emit(A64_STR64I(A64_R(19), A64_SP, regs_off), ctx);
+	emit(A64_STR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
 	for (i = 0; i < fentry_cnt; i++) {
 		struct bpf_prog *prog = fentry_progs[i];
@@ -1285,43 +1276,88 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 		if (!prog || !prog->bpf_func)
 			return -EINVAL;
 
-		emit_addr_mov_i64(A64_R(19), (u64)prog, &ctx);
-		emit_trampoline_call(&ctx, (u64)__bpf_prog_enter);
-		emit(A64_MOV(1, A64_R(20), A64_R(0)), &ctx);
+		emit_addr_mov_i64(A64_R(19), (u64)prog, ctx);
+		emit_trampoline_call(ctx, (u64)__bpf_prog_enter);
+		emit(A64_MOV(1, A64_R(20), A64_R(0)), ctx);
 
 		/* arg1: pointer to the saved BTF argument array */
-		emit(A64_MOV(1, A64_R(0), A64_SP), &ctx);
+		emit(A64_MOV(1, A64_R(0), A64_SP), ctx);
 		if (!prog->jited) {
 			emit_a64_mov_i64(A64_R(10),
-					 offsetof(struct bpf_prog, insnsi), &ctx);
-			emit(A64_LDR64(A64_R(1), A64_R(19), A64_R(10)), &ctx);
+					 offsetof(struct bpf_prog, insnsi), ctx);
+			emit(A64_LDR64(A64_R(1), A64_R(19), A64_R(10)), ctx);
 		}
 		emit_a64_mov_i64(A64_R(10),
-				offsetof(struct bpf_prog, bpf_func), &ctx);
-		emit(A64_LDR64(A64_R(10), A64_R(19), A64_R(10)), &ctx);
-		emit(A64_BLR(A64_R(10)), &ctx);
+				offsetof(struct bpf_prog, bpf_func), ctx);
+		emit(A64_LDR64(A64_R(10), A64_R(19), A64_R(10)), ctx);
+		emit(A64_BLR(A64_R(10)), ctx);
 
 		/* __bpf_prog_exit(prog, start) */
-		emit(A64_MOV(1, A64_R(0), A64_R(19)), &ctx);
-		emit(A64_MOV(1, A64_R(1), A64_R(20)), &ctx);
-		emit_trampoline_call(&ctx, (u64)__bpf_prog_exit);
+		emit(A64_MOV(1, A64_R(0), A64_R(19)), ctx);
+		emit(A64_MOV(1, A64_R(1), A64_R(20)), ctx);
+		emit_trampoline_call(ctx, (u64)__bpf_prog_exit);
 	}
 
 	for (i = 0; i < m->nr_args; i++)
-		emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)),
-		     &ctx);
-	emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), &ctx);
-	emit(A64_LDR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), &ctx);
+		emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), ctx);
+	emit(A64_LDR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
-	emit(A64_MOV(1, A64_SP, A64_FP), &ctx);
-	emit(A64_POP(A64_FP, A64_LR, A64_SP), &ctx);
-	emit(A64_POP(A64_FP, A64_R(9), A64_SP), &ctx);
-	emit(A64_MOV(1, A64_R(10), A64_LR), &ctx);
-	emit(A64_MOV(1, A64_LR, A64_R(9)), &ctx);
-	emit(A64_RET(A64_R(10)), &ctx);
+	emit(A64_MOV(1, A64_SP, A64_FP), ctx);
+	emit(A64_POP(A64_FP, A64_LR, A64_SP), ctx);
+	emit(A64_POP(A64_FP, A64_R(9), A64_SP), ctx);
+	emit(A64_MOV(1, A64_R(10), A64_LR), ctx);
+	emit(A64_MOV(1, A64_LR, A64_R(9)), ctx);
+	emit(A64_RET(A64_R(10)), ctx);
 
-	if (ctx.idx * sizeof(u32) > PAGE_SIZE / 2)
+	/*
+	 * Each half of the trampoline page is a separate image. Check the
+	 * generated size in the sizing pass before writing executable memory.
+	 */
+	if (ctx->idx * sizeof(u32) > PAGE_SIZE / 2)
 		return -E2BIG;
+
+	return 0;
+}
+
+int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
+				u32 flags, struct bpf_prog **fentry_progs,
+				int fentry_cnt, struct bpf_prog **fexit_progs,
+				int fexit_cnt, void *orig_call)
+{
+	struct jit_ctx ctx = {
+		.prog = NULL,
+		.idx = 0,
+		.epilogue_offset = 0,
+		.offset = NULL,
+		.image = NULL,
+		.stack_size = 0,
+	};
+	int expected_idx;
+	int err;
+
+	if (!image || !m || fentry_cnt < 0 || fexit_cnt < 0)
+		return -EINVAL;
+
+	/*
+	 * First size the trampoline without writing it. The image is split
+	 * into two halves by the generic manager, so writing first and checking
+	 * the size afterward could corrupt the alternate image.
+	 */
+	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
+				  fentry_cnt, fexit_cnt);
+	if (err)
+		return err;
+	expected_idx = ctx.idx;
+
+	ctx.image = image;
+	ctx.idx = 0;
+	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
+				  fentry_cnt, fexit_cnt);
+	if (err)
+		return err;
+	if (WARN_ON_ONCE(ctx.idx != expected_idx))
+		return -EFAULT;
 
 	/* Make the generated trampoline visible to the instruction cache. */
 	flush_icache_range((unsigned long)image,
