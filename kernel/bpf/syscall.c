@@ -1997,7 +1997,7 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 
 out_free_tp:
  	kfree(raw_tp);
- 	return err;
+	goto out_put_btp;
 out_free_tramp_tp:
 	kfree(raw_tp);
 	goto out_put_prog;
