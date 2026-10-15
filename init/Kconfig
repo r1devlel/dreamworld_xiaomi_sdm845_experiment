@@ -1523,11 +1523,18 @@ config BPF_TRAMPOLINE_NATIVE
 	depends on ARM64 && BPF_SYSCALL && BPF_JIT && DEBUG_INFO_BTF && KALLSYMS
 	help
 	  Reserve four compiler-generated NOP instructions at ARM64 C function
-	  entries so an experimental BPF fentry trampoline can safely preserve
-	  argument registers before the kernel's legacy -pg instrumentation runs.
+	  entries for an experimental native BPF trampoline. This allows a
+	  trampoline to inspect supported function arguments before normal kernel
+	  entry instrumentation executes.
+	
+	  The current backend is limited to global core-kernel functions with
+	  register-sized scalar, enum, or pointer arguments. Native fexit supports
+	  only void or scalar/pointer return values up to 64 bits. Static functions,
+	  modules, aggregate arguments, and aggregate fexit returns are unsupported.
+	
 	  This adds four instructions of entry padding to compiled functions and
-	  is intended for development kernels only. Native tracing remains
-	  unavailable unless the matching BTF attach/detach path is implemented.
+	  is intended for development/testing kernels only. Runtime stability and
+	  compatibility with the running ROM must be validated separately.
 
 config BPF_JIT_ALWAYS_ON
 	bool "Permanently enable BPF JIT and remove BPF interpreter"
