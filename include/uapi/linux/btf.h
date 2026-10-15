@@ -140,6 +140,13 @@ struct btf_param {
 	__u32	type;
 };
 
+/* BTF_KIND_FUNC linkage is stored in BTF_INFO_VLEN(type->info). */
+enum btf_func_linkage {
+	BTF_FUNC_STATIC = 0,
+	BTF_FUNC_GLOBAL = 1,
+	BTF_FUNC_EXTERN = 2,
+};
+
 enum {
  	BTF_VAR_STATIC = 0,
  	BTF_VAR_GLOBAL_ALLOCATED,
