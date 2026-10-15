@@ -125,8 +125,8 @@ jobs:
           fi
 
           echo "=== BPF trampoline symbols ==="
-          if test -f out/kernel/bpf/trampoline.o; then
-            llvm-nm-18 out/kernel/bpf/trampoline.o 2>/dev/null | grep -E 'call_rcu_tasks|bpf_dispatcher_change_prog' || true
+          if test -s out/kernel/bpf/trampoline.o; then
+            llvm-nm-18 out/kernel/bpf/trampoline.o 2>/dev/null | grep -E 'bpf_trampoline_(lookup|link_prog|unlink_prog|put)|__bpf_prog_(enter|exit)|arch_prepare_bpf_trampoline' || true
           else
             echo "MISSING out/kernel/bpf/trampoline.o"
           fi

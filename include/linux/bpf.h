@@ -391,6 +391,12 @@ struct btf_func_model {
 	u8 arg_size[MAX_BPF_FUNC_ARGS];
 };
 
+/* Legacy trampoline ABI shared by the generic and ARM64 backends. */
+#define BPF_TRAMP_F_RESTORE_REGS	BIT(0)
+#define BPF_TRAMP_F_CALL_ORIG		BIT(1)
+#define BPF_TRAMP_F_SKIP_FRAME		BIT(2)
+#define BPF_MAX_TRAMP_PROGS		40
+
 enum bpf_tramp_prog_type {
 	BPF_TRAMP_FENTRY,
 	BPF_TRAMP_FEXIT,
@@ -744,6 +750,8 @@ struct bpf_trampoline *bpf_trampoline_lookup(u64 key);
 int bpf_trampoline_link_prog(struct bpf_prog *prog);
 int bpf_trampoline_unlink_prog(struct bpf_prog *prog);
 void bpf_trampoline_put(struct bpf_trampoline *tr);
+u64 notrace __bpf_prog_enter(void);
+void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start);
 #else
 static inline struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 {
