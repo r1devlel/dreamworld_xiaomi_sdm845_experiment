@@ -3394,14 +3394,14 @@ int btf_distill_func_proto(struct bpf_verifier_log *log, struct btf *btf,
 	args = (const struct btf_param *)(func + 1);
 	nargs = btf_type_vlen(func);
 	if (nargs >= MAX_BPF_FUNC_ARGS) {
-		bpf_log(log, "The function %s has %u arguments; too many.\\n",
+		bpf_log(log, "The function %s has %u arguments; too many.\n",
 			tname, nargs);
 		return -EINVAL;
 	}
 
 	ret = __get_type_size(btf, func->type, &t);
 	if (ret < 0) {
-		bpf_log(log, "The function %s return type %s is unsupported.\\n",
+		bpf_log(log, "The function %s return type %s is unsupported.\n",
 			tname, btf_kind_str[BTF_INFO_KIND(t->info)]);
 		return -EINVAL;
 	}
@@ -3410,7 +3410,7 @@ int btf_distill_func_proto(struct bpf_verifier_log *log, struct btf *btf,
 	for (i = 0; i < nargs; i++) {
 		ret = __get_type_size(btf, args[i].type, &t);
 		if (ret < 0) {
-			bpf_log(log, "The function %s arg%u type %s is unsupported.\\n",
+			bpf_log(log, "The function %s arg%u type %s is unsupported.\n",
 				tname, i, btf_kind_str[BTF_INFO_KIND(t->info)]);
 			return -EINVAL;
 		}
