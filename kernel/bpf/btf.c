@@ -3344,6 +3344,82 @@ errout:
 	return ERR_PTR(err);
 }
 
+/*
+ * Distill a BTF function prototype into sizes needed by the architecture
+ * trampoline generator. The first version deliberately supports scalar,
+ * enum, and pointer arguments only.
+ */
+static int __get_type_size(struct btf *btf, u32 btf_id,
+			   const struct btf_type **bad_type)
+{
+	const struct btf_type *t;
+
+	if (!btf_id)
+		return 0; /* void */
+
+	t = btf_type_by_id(btf, btf_id);
+	while (t && btf_type_is_modifier(t))
+		t = btf_type_by_id(btf, t->type);
+	if (!t) {
+		*bad_type = btf->types[0];
+		return -EINVAL;
+	}
+	if (btf_type_is_ptr(t))
+		return sizeof(void *);
+	if (btf_type_is_int(t) || btf_type_is_enum(t))
+		return t->size;
+
+	*bad_type = t;
+	return -EINVAL;
+}
+
+int btf_distill_func_proto(struct bpf_verifier_log *log, struct btf *btf,
+			   const struct btf_type *func, const char *tname,
+			   struct btf_func_model *m)
+{
+	const struct btf_param *args;
+	const struct btf_type *t;
+	u32 i, nargs;
+	int ret;
+
+	if (!func) {
+		/* Preserve the historical raw tracing context shape. */
+		for (i = 0; i < 5; i++)
+			m->arg_size[i] = sizeof(u64);
+		m->ret_size = sizeof(u64);
+		m->nr_args = 5;
+		return 0;
+	}
+
+	args = (const struct btf_param *)(func + 1);
+	nargs = btf_type_vlen(func);
+	if (nargs >= MAX_BPF_FUNC_ARGS) {
+		bpf_log(log, "The function %s has %u arguments; too many.\\n",
+			tname, nargs);
+		return -EINVAL;
+	}
+
+	ret = __get_type_size(btf, func->type, &t);
+	if (ret < 0) {
+		bpf_log(log, "The function %s return type %s is unsupported.\\n",
+			tname, btf_kind_str[BTF_INFO_KIND(t->info)]);
+		return -EINVAL;
+	}
+	m->ret_size = ret;
+
+	for (i = 0; i < nargs; i++) {
+		ret = __get_type_size(btf, args[i].type, &t);
+		if (ret < 0) {
+			bpf_log(log, "The function %s arg%u type %s is unsupported.\\n",
+				tname, i, btf_kind_str[BTF_INFO_KIND(t->info)]);
+			return -EINVAL;
+		}
+		m->arg_size[i] = ret;
+	}
+	m->nr_args = nargs;
+	return 0;
+}
+
 extern struct btf *btf_vmlinux;
 
 bool btf_ctx_access(int off, int size, enum bpf_access_type type,
