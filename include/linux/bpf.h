@@ -395,7 +395,7 @@ struct btf_func_model {
 #define BPF_TRAMP_F_RESTORE_REGS	BIT(0)
 #define BPF_TRAMP_F_CALL_ORIG		BIT(1)
 #define BPF_TRAMP_F_SKIP_FRAME		BIT(2)
-#define BPF_MAX_TRAMP_PROGS		40
+#define BPF_MAX_TRAMP_PROGS		20
 
 enum bpf_tramp_prog_type {
 	BPF_TRAMP_FENTRY,
