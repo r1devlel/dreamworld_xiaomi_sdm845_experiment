@@ -270,52 +270,63 @@ static int create_counter_map(void)
 
 static int load_counter_prog(int map_fd, uint32_t btf_id,
 			     enum bpf_attach_type attach_type,
-			     uint32_t counter_index)
+			     uint32_t counter_index, uint32_t target_tgid)
 {
-	struct bpf_insn insns[12];
+	struct bpf_insn insns[15];
 	union bpf_attr attr;
 	char verifier_log[VERIFIER_LOG_SIZE];
 	static const char license[] = "GPL";
 	int fd;
 
 	memset(insns, 0, sizeof(insns));
-	/* R1 = map_fd. The next instruction is the high half of the pseudo-load. */
-	insns[0].code = BPF_LD | BPF_DW | BPF_IMM;
-	insns[0].dst_reg = BPF_REG_1;
-	insns[0].src_reg = BPF_PSEUDO_MAP_FD;
-	insns[0].imm = map_fd;
+	/* Ignore calls from other processes so detach checks are deterministic. */
+	insns[0].code = BPF_JMP | BPF_CALL;
+	insns[0].imm = BPF_FUNC_get_current_pid_tgid;
+	insns[1].code = BPF_ALU64 | BPF_RSH | BPF_K;
+	insns[1].dst_reg = BPF_REG_0;
+	insns[1].imm = 32;
+	insns[2].code = BPF_JMP | BPF_JNE | BPF_K;
+	insns[2].dst_reg = BPF_REG_0;
+	insns[2].off = 10; /* Skip to the common zero return. */
+	insns[2].imm = (int32_t)target_tgid;
+
+	/* R1 = map_fd. Insn 4 is the high half of the pseudo-load. */
+	insns[3].code = BPF_LD | BPF_DW | BPF_IMM;
+	insns[3].dst_reg = BPF_REG_1;
+	insns[3].src_reg = BPF_PSEUDO_MAP_FD;
+	insns[3].imm = map_fd;
 
 	/* Store the counter key on the BPF stack for map_lookup_elem(). */
-	insns[2].code = BPF_ST | BPF_MEM | BPF_W;
-	insns[2].dst_reg = BPF_REG_10;
-	insns[2].off = -4;
-	insns[2].imm = (int32_t)counter_index;
-	insns[3].code = BPF_ALU64 | BPF_MOV | BPF_X;
-	insns[3].dst_reg = BPF_REG_2;
-	insns[3].src_reg = BPF_REG_10;
-	insns[4].code = BPF_ALU64 | BPF_ADD | BPF_K;
-	insns[4].dst_reg = BPF_REG_2;
-	insns[4].imm = -4;
-	insns[5].code = BPF_JMP | BPF_CALL;
-	insns[5].imm = BPF_FUNC_map_lookup_elem;
+	insns[5].code = BPF_ST | BPF_MEM | BPF_W;
+	insns[5].dst_reg = BPF_REG_10;
+	insns[5].off = -4;
+	insns[5].imm = (int32_t)counter_index;
+	insns[6].code = BPF_ALU64 | BPF_MOV | BPF_X;
+	insns[6].dst_reg = BPF_REG_2;
+	insns[6].src_reg = BPF_REG_10;
+	insns[7].code = BPF_ALU64 | BPF_ADD | BPF_K;
+	insns[7].dst_reg = BPF_REG_2;
+	insns[7].imm = -4;
+	insns[8].code = BPF_JMP | BPF_CALL;
+	insns[8].imm = BPF_FUNC_map_lookup_elem;
 
 	/* if (R0 == NULL) goto return; */
-	insns[6].code = BPF_JMP | BPF_JEQ | BPF_K;
-	insns[6].dst_reg = BPF_REG_0;
-	insns[6].off = 3;
-	insns[7].code = BPF_LDX | BPF_MEM | BPF_DW;
-	insns[7].dst_reg = BPF_REG_1;
-	insns[7].src_reg = BPF_REG_0;
-	insns[8].code = BPF_ALU64 | BPF_ADD | BPF_K;
-	insns[8].dst_reg = BPF_REG_1;
-	insns[8].imm = 1;
-	insns[9].code = BPF_STX | BPF_MEM | BPF_DW;
+	insns[9].code = BPF_JMP | BPF_JEQ | BPF_K;
 	insns[9].dst_reg = BPF_REG_0;
-	insns[9].src_reg = BPF_REG_1;
-	insns[10].code = BPF_ALU64 | BPF_MOV | BPF_K;
-	insns[10].dst_reg = BPF_REG_0;
-	insns[10].imm = 0;
-	insns[11].code = BPF_JMP | BPF_EXIT;
+	insns[9].off = 3;
+	insns[10].code = BPF_LDX | BPF_MEM | BPF_DW;
+	insns[10].dst_reg = BPF_REG_1;
+	insns[10].src_reg = BPF_REG_0;
+	insns[11].code = BPF_ALU64 | BPF_ADD | BPF_K;
+	insns[11].dst_reg = BPF_REG_1;
+	insns[11].imm = 1;
+	insns[12].code = BPF_STX | BPF_MEM | BPF_DW;
+	insns[12].dst_reg = BPF_REG_0;
+	insns[12].src_reg = BPF_REG_1;
+	insns[13].code = BPF_ALU64 | BPF_MOV | BPF_K;
+	insns[13].dst_reg = BPF_REG_0;
+	insns[13].imm = 0;
+	insns[14].code = BPF_JMP | BPF_EXIT;
 
 	memset(&attr, 0, sizeof(attr));
 	memset(verifier_log, 0, sizeof(verifier_log));
@@ -367,9 +378,11 @@ static int lookup_counter(int map_fd, uint32_t index, uint64_t *value)
 
 int main(void)
 {
-	uint32_t btf_id;
+	uint32_t btf_id, target_tgid;
 	const char *target_name = NULL;
 	uint64_t fentry_count = 0, fexit_count = 0;
+	uint64_t fentry_after_fexit_detach = 0, fexit_after_fexit_detach = 0;
+	uint64_t fentry_after_detach = 0, fexit_after_detach = 0;
 	int map_fd = -1, fentry_prog = -1, fexit_prog = -1;
 	int fentry_link = -1, fexit_link = -1;
 	int result = 1;
@@ -388,16 +401,28 @@ int main(void)
 		return 4;
 	}
 	printf("Using BTF function %s (id %u).\n", target_name, btf_id);
+	{
+		long pid = syscall(SYS_getpid);
+
+		if (pid < 0) {
+			perror("getpid before attach");
+			return 1;
+		}
+		target_tgid = (uint32_t)pid;
+	}
+	printf("Filtering trampoline counters to TGID %u.\n", target_tgid);
 
 	map_fd = create_counter_map();
 	if (map_fd < 0) {
 		perror("BPF_MAP_CREATE");
 		goto out;
 	}
-	fentry_prog = load_counter_prog(map_fd, btf_id, BPF_TRACE_FENTRY, 0);
+	fentry_prog = load_counter_prog(map_fd, btf_id, BPF_TRACE_FENTRY, 0,
+					 target_tgid);
 	if (fentry_prog < 0)
 		goto out;
-	fexit_prog = load_counter_prog(map_fd, btf_id, BPF_TRACE_FEXIT, 1);
+	fexit_prog = load_counter_prog(map_fd, btf_id, BPF_TRACE_FEXIT, 1,
+					 target_tgid);
 	if (fexit_prog < 0)
 		goto out;
 
@@ -412,14 +437,14 @@ int main(void)
 		goto out;
 	}
 
-	/* Invoke the syscall after both programs have been attached. */
+	/* Both callbacks must run for this process before testing detach. */
 	if (syscall(SYS_getpid) < 0) {
-		perror("getpid syscall");
+		perror("getpid syscall while attached");
 		goto out;
 	}
 	if (lookup_counter(map_fd, 0, &fentry_count) < 0 ||
 	    lookup_counter(map_fd, 1, &fexit_count) < 0) {
-		perror("BPF_MAP_LOOKUP_ELEM");
+		perror("BPF_MAP_LOOKUP_ELEM while attached");
 		goto out;
 	}
 	if (!fentry_count || !fexit_count) {
@@ -429,9 +454,62 @@ int main(void)
 			(unsigned long long)fexit_count);
 		goto out;
 	}
-	printf("PASS: native fentry count=%llu, fexit count=%llu\n",
-	       (unsigned long long)fentry_count,
-	       (unsigned long long)fexit_count);
+
+	/* Detach fexit first: fentry must keep running, fexit must stop. */
+	if (close(fexit_link) < 0) {
+		perror("close native fexit attachment");
+		fexit_link = -1;
+		goto out;
+	}
+	fexit_link = -1;
+	if (syscall(SYS_getpid) < 0) {
+		perror("getpid syscall after fexit detach");
+		goto out;
+	}
+	if (lookup_counter(map_fd, 0, &fentry_after_fexit_detach) < 0 ||
+	    lookup_counter(map_fd, 1, &fexit_after_fexit_detach) < 0) {
+		perror("BPF_MAP_LOOKUP_ELEM after fexit detach");
+		goto out;
+	}
+	if (fentry_after_fexit_detach <= fentry_count ||
+	    fexit_after_fexit_detach != fexit_count) {
+		fprintf(stderr,
+			"Unexpected counters after fexit detach: before fentry=%llu fexit=%llu; after fentry=%llu fexit=%llu\n",
+			(unsigned long long)fentry_count,
+			(unsigned long long)fexit_count,
+			(unsigned long long)fentry_after_fexit_detach,
+			(unsigned long long)fexit_after_fexit_detach);
+		goto out;
+	}
+
+	/* Detach fentry too, then verify neither program runs again. */
+	if (close(fentry_link) < 0) {
+		perror("close native fentry attachment");
+		fentry_link = -1;
+		goto out;
+	}
+	fentry_link = -1;
+	if (syscall(SYS_getpid) < 0) {
+		perror("getpid syscall after fentry detach");
+		goto out;
+	}
+	if (lookup_counter(map_fd, 0, &fentry_after_detach) < 0 ||
+	    lookup_counter(map_fd, 1, &fexit_after_detach) < 0) {
+		perror("BPF_MAP_LOOKUP_ELEM after fentry detach");
+		goto out;
+	}
+	if (fentry_after_detach != fentry_after_fexit_detach ||
+	    fexit_after_detach != fexit_after_fexit_detach) {
+		fprintf(stderr,
+			"Native trampoline counters changed after detach: before fentry=%llu fexit=%llu; after fentry=%llu fexit=%llu\n",
+			(unsigned long long)fentry_after_fexit_detach,
+			(unsigned long long)fexit_after_fexit_detach,
+			(unsigned long long)fentry_after_detach,
+			(unsigned long long)fexit_after_detach);
+		goto out;
+	}
+
+	printf("PASS: fentry/fexit executed; each detach stopped its callback.\n");
 	result = 0;
 out:
 	if (fexit_link >= 0)
