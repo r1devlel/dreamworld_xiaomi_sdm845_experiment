@@ -2,10 +2,10 @@
 /*
  * Legacy BPF trampoline manager.
  *
- * This file intentionally provides only the generic lifecycle/RCU layer.
- * An architecture backend must implement arch_prepare_bpf_trampoline(), and
- * the native-function ftrace adapter must be available before BTF fentry/fexit
- * programs are enabled on that architecture.
+ * This file provides the generic lifecycle/RCU layer. Native ARM64 tracing
+ * uses the opt-in compiler-reserved entry patchpoint backend; the verifier
+ * must reject targets and function signatures outside the backend's supported
+ * ABI before a trampoline is attached.
  */
 #include <linux/bpf.h>
 #include <linux/filter.h>
