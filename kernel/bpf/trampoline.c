@@ -156,11 +156,11 @@ struct bpf_trampoline *bpf_trampoline_get(u64 key,
 	int err = 0;
 
 	if (!model || !addr || model->nr_args > MAX_BPF_FUNC_ARGS)
-		return NULL;
+		return ERR_PTR(-EINVAL);
 
 	tr = bpf_trampoline_lookup(key);
 	if (!tr)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	mutex_lock(&tr->mutex);
 	if (tr->func.addr) {
@@ -179,7 +179,7 @@ struct bpf_trampoline *bpf_trampoline_get(u64 key,
 
 	if (err) {
 		bpf_trampoline_put(tr);
-		return NULL;
+		return ERR_PTR(err);
 	}
 
 	return tr;
