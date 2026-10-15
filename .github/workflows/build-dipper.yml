@@ -118,7 +118,7 @@ jobs:
           # Validate the compiler reserved the exact 16-byte entry patchpoint.
           # This checks emitted machine code, not only the CONFIG/symbol names.
           native_target=do_exit
-          native_addr=$(llvm-nm-18 -n out/vmlinux | awk -v sym="$native_target" '$3 == sym { print $1; exit }')
+          native_addr=$(llvm-nm-18 -n out/vmlinux | awk -v sym="$native_target" '$3 == sym && !found { addr=$1; found=1 } END { if (found) print addr }')
           if [ -z "$native_addr" ]; then
             echo "::error::Native patchpoint smoke-test target $native_target was not found"
             exit 1
