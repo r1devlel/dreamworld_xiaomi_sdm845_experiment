@@ -785,6 +785,14 @@ static inline int bpf_trampoline_unlink_prog(struct bpf_prog *prog)
 {
 	return -ENOTSUPP;
 }
+static inline int bpf_trampoline_attach_prog(struct bpf_prog *prog)
+{
+	return -ENOTSUPP;
+}
+static inline int bpf_trampoline_detach_prog(struct bpf_prog *prog)
+{
+	return -ENOTSUPP;
+}
 static inline void bpf_trampoline_put(struct bpf_trampoline *tr) {}
 #endif
 
