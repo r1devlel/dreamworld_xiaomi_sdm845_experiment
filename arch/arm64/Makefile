@@ -86,6 +86,10 @@ KBUILD_CFLAGS	+= -mgeneral-regs-only $(lseinstr) $(vdso32)
 KBUILD_CFLAGS	+= -fno-asynchronous-unwind-tables
 KBUILD_CFLAGS	+= $(call cc-option, -mpc-relative-literal-loads)
 KBUILD_CFLAGS	+= -fno-pic
+ifeq ($(CONFIG_BPF_TRAMPOLINE_NATIVE),y)
+# Four NOPs form a 16-byte entry patch window for native BPF fentry.
+KBUILD_CFLAGS	+= -fpatchable-function-entry=4,0
+endif
 KBUILD_AFLAGS	+= $(lseinstr) $(vdso32)
 
 ifeq ($(CONFIG_CPU_BIG_ENDIAN), y)

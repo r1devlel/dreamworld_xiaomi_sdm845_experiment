@@ -71,6 +71,8 @@ static int bpf_trampoline_update(struct bpf_trampoline *tr)
 
 	if (fexit_cnt)
 		flags = BPF_TRAMP_F_CALL_ORIG | BPF_TRAMP_F_SKIP_FRAME;
+	if (tr->func.native_entry)
+		flags |= BPF_TRAMP_F_NATIVE_ENTRY;
 
 	/*
 	 * The image halves are updated alternately. Wait for task-context
@@ -144,6 +146,42 @@ struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
 	hlist_add_head(&tr->hlist, head);
 out:
 	mutex_unlock(&trampoline_mutex);
+	return tr;
+}
+
+struct bpf_trampoline *bpf_trampoline_get(u64 key,
+					 struct btf_func_model *model, void *addr)
+{
+	struct bpf_trampoline *tr;
+	int err = 0;
+
+	if (!model || !addr || model->nr_args > MAX_BPF_FUNC_ARGS)
+		return NULL;
+
+	tr = bpf_trampoline_lookup(key);
+	if (!tr)
+		return NULL;
+
+	mutex_lock(&tr->mutex);
+	if (tr->func.addr) {
+		if (tr->func.addr != addr || !tr->func.native_entry ||
+		    tr->func.model.ret_size != model->ret_size ||
+		    tr->func.model.nr_args != model->nr_args ||
+		    memcmp(tr->func.model.arg_size, model->arg_size,
+			   model->nr_args * sizeof(model->arg_size[0])))
+			err = -EINVAL;
+	} else {
+		tr->func.model = *model;
+		tr->func.addr = addr;
+		tr->func.native_entry = true;
+	}
+	mutex_unlock(&tr->mutex);
+
+	if (err) {
+		bpf_trampoline_put(tr);
+		return NULL;
+	}
+
 	return tr;
 }
 

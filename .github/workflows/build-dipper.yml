@@ -70,6 +70,9 @@ jobs:
           scripts/kconfig/merge_config.sh -m -O out out/.config \
             arch/arm64/configs/droidspaces.config
 
+          # Compile-test the optional native-entry backend only on this branch.
+          scripts/config --file out/.config --enable BPF_TRAMPOLINE_NATIVE
+
           make O=out \
             ARCH="$ARCH" CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
             CROSS_COMPILE="$CROSS_COMPILE" \
@@ -81,7 +84,7 @@ jobs:
           echo "=== Relevant final configuration ==="
           echo "=== Required BPF and trampoline prerequisites ==="
           grep -E '^(CONFIG_(CGROUP_BPF|BPF|BPF_SYSCALL|BPF_JIT_ALWAYS_ON|NETFILTER_XT_MATCH_BPF|NET_CLS_BPF|BPF_JIT|HAVE_EBPF_JIT)=|# CONFIG_(CGROUP_BPF|BPF|BPF_SYSCALL|BPF_JIT_ALWAYS_ON|NETFILTER_XT_MATCH_BPF|NET_CLS_BPF|BPF_JIT|HAVE_EBPF_JIT) is not set)' out/.config || true
-          for symbol in CONFIG_CGROUP_BPF CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT_ALWAYS_ON CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NET_CLS_BPF CONFIG_BPF_JIT CONFIG_HAVE_EBPF_JIT CONFIG_TASKS_RCU CONFIG_DEBUG_INFO_BTF CONFIG_PAGE_POOL; do
+          for symbol in CONFIG_CGROUP_BPF CONFIG_BPF CONFIG_BPF_SYSCALL CONFIG_BPF_JIT_ALWAYS_ON CONFIG_NETFILTER_XT_MATCH_BPF CONFIG_NET_CLS_BPF CONFIG_BPF_JIT CONFIG_HAVE_EBPF_JIT CONFIG_TASKS_RCU CONFIG_DEBUG_INFO_BTF CONFIG_PAGE_POOL CONFIG_BPF_TRAMPOLINE_NATIVE; do
             if ! grep -qx "${symbol}=y" out/.config; then
               echo "::error::Required kernel config is missing: ${symbol}=y"
               exit 1
@@ -116,6 +119,9 @@ jobs:
           set +e
           echo "=== Source revision ==="
           git rev-parse --short HEAD 2>/dev/null || true
+
+          echo "=== Native ARM64 BPF entry patchpoint config ==="
+          grep -nE '^(CONFIG_BPF_TRAMPOLINE_NATIVE=|# CONFIG_BPF_TRAMPOLINE_NATIVE is not set)' out/.config 2>/dev/null || true
 
           echo "=== CONFIG_TASKS_RCU in out/.config ==="
           grep -nE '^(CONFIG_TASKS_RCU=|# CONFIG_TASKS_RCU is not set)' out/.config 2>/dev/null || true

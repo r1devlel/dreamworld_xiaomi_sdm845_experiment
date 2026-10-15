@@ -395,6 +395,8 @@ struct btf_func_model {
 #define BPF_TRAMP_F_RESTORE_REGS	BIT(0)
 #define BPF_TRAMP_F_CALL_ORIG		BIT(1)
 #define BPF_TRAMP_F_SKIP_FRAME		BIT(2)
+/* ARM64 entry trampoline uses a reserved compiler patchpoint, not BL _mcount. */
+#define BPF_TRAMP_F_NATIVE_ENTRY	BIT(3)
 #define BPF_MAX_TRAMP_PROGS		20
 
 enum bpf_tramp_prog_type {
@@ -412,6 +414,7 @@ struct bpf_trampoline {
 		struct btf_func_model model;
 		void *addr;
 		bool ftrace_managed;
+		bool native_entry;
 	} func;
 	struct hlist_head progs_hlist[BPF_TRAMP_MAX];
 	int progs_cnt[BPF_TRAMP_MAX];
@@ -749,6 +752,8 @@ const struct bpf_func_proto *bpf_base_func_proto(enum bpf_func_id func_id, const
 void *bpf_jit_alloc_exec(unsigned long size);
 void bpf_jit_free_exec(void *addr);
 struct bpf_trampoline *bpf_trampoline_lookup(u64 key);
+struct bpf_trampoline *bpf_trampoline_get(u64 key,
+					 struct btf_func_model *model, void *addr);
 int bpf_trampoline_link_prog(struct bpf_prog *prog);
 int bpf_trampoline_unlink_prog(struct bpf_prog *prog);
 void bpf_trampoline_put(struct bpf_trampoline *tr);
@@ -756,6 +761,12 @@ u64 notrace __bpf_prog_enter(void);
 void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start);
 #else
 static inline struct bpf_trampoline *bpf_trampoline_lookup(u64 key)
+{
+	return NULL;
+}
+static inline struct bpf_trampoline *bpf_trampoline_get(u64 key,
+							 struct btf_func_model *model,
+							 void *addr)
 {
 	return NULL;
 }

@@ -195,6 +195,7 @@ static inline int epilogue_offset(const struct jit_ctx *ctx)
 
 /* Offset of the NOP instruction that can be patched to a trampoline call. */
 #define POKE_OFFSET 1
+#define BPF_TRAMPOLINE_NATIVE_PATCH_INSNS 4
 
 /* Tail call offset to jump into, after the trampoline patch site. */
 #define PROLOGUE_OFFSET 9
@@ -1119,6 +1120,77 @@ static int gen_branch_or_nop(enum aarch64_insn_branch_type type, void *ip,
 	return *insn != AARCH64_BREAK_FAULT ? 0 : -EFAULT;
 }
 
+#ifdef CONFIG_BPF_TRAMPOLINE_NATIVE
+/*
+ * Replace a 16-byte, four-NOP patchpoint at a native kernel function entry.
+ * The generated MOVN/MOVK/BR sequence is independent of branch distance, so
+ * it can reach a trampoline allocated in the BPF JIT region.
+ */
+static void bpf_trampoline_gen_native_branch(void *target, u32 insns[4])
+{
+	u64 addr = (u64)target;
+	int i;
+
+	if (!target) {
+		for (i = 0; i < BPF_TRAMPOLINE_NATIVE_PATCH_INSNS; i++)
+			insns[i] = aarch64_insn_gen_nop();
+		return;
+	}
+
+	insns[0] = A64_MOVN(1, A64_R(10), (~addr) & 0xffff, 0);
+	insns[1] = A64_MOVK(1, A64_R(10), (addr >> 16) & 0xffff, 16);
+	insns[2] = A64_MOVK(1, A64_R(10), (addr >> 32) & 0xffff, 32);
+	insns[3] = A64_BR(A64_R(10));
+}
+
+static int bpf_arch_text_poke_native(void *ip,
+				     enum bpf_text_poke_type poke_type,
+				     void *old_addr, void *new_addr)
+{
+	void *addrs[BPF_TRAMPOLINE_NATIVE_PATCH_INSNS];
+	char namebuf[KSYM_NAME_LEN];
+	char *modname = NULL;
+	unsigned long size = 0, offset = 0;
+	const char *name;
+	u32 expected[BPF_TRAMPOLINE_NATIVE_PATCH_INSNS];
+	u32 replacement[BPF_TRAMPOLINE_NATIVE_PATCH_INSNS];
+	u32 replaced;
+	int i, ret = 0;
+
+	if (poke_type != BPF_MOD_CALL ||
+	    !IS_ALIGNED((unsigned long)ip, AARCH64_INSN_SIZE))
+		return -EINVAL;
+
+	/* This first-stage backend only patches core-kernel function entries. */
+	name = kallsyms_lookup((unsigned long)ip, &size, &offset,
+			       &modname, namebuf);
+	if (!name || modname || offset ||
+	    size < BPF_TRAMPOLINE_NATIVE_PATCH_INSNS * AARCH64_INSN_SIZE)
+		return -ENOTSUPP;
+
+	bpf_trampoline_gen_native_branch(old_addr, expected);
+	bpf_trampoline_gen_native_branch(new_addr, replacement);
+	for (i = 0; i < BPF_TRAMPOLINE_NATIVE_PATCH_INSNS; i++)
+		addrs[i] = ip + i * AARCH64_INSN_SIZE;
+
+	mutex_lock(&text_mutex);
+	for (i = 0; i < BPF_TRAMPOLINE_NATIVE_PATCH_INSNS; i++) {
+		ret = aarch64_insn_read(addrs[i], &replaced);
+		if (ret || replaced != expected[i]) {
+			ret = -EFAULT;
+			goto out;
+		}
+	}
+
+	if (memcmp(expected, replacement, sizeof(expected)))
+		ret = aarch64_insn_patch_text(addrs, replacement,
+				      BPF_TRAMPOLINE_NATIVE_PATCH_INSNS);
+out:
+	mutex_unlock(&text_mutex);
+	return ret;
+}
+#endif
+
 /*
  * Replace the branch instruction at a BPF JIT patch site. Long jumps from
  * a BPF program use its inline PLT because module/vmalloc allocations can
@@ -1137,8 +1209,13 @@ int bpf_arch_text_poke(void *ip, enum bpf_text_poke_type poke_type,
 	u64 plt_target = 0;
 	bool poking_bpf_entry;
 
-	if (!__bpf_address_lookup((unsigned long)ip, &size, &offset, namebuf))
+	if (!__bpf_address_lookup((unsigned long)ip, &size, &offset, namebuf)) {
+#ifdef CONFIG_BPF_TRAMPOLINE_NATIVE
+		return bpf_arch_text_poke_native(ip, poke_type, old_addr, new_addr);
+#else
 		return -ENOTSUPP;
+#endif
+	}
 
 	image = ip - offset;
 	poking_bpf_entry = (offset == 0);
@@ -1231,15 +1308,22 @@ static void emit_trampoline_call(struct jit_ctx *ctx, u64 addr)
 static int emit_bpf_trampoline(struct jit_ctx *ctx,
 			       struct btf_func_model *m, u32 flags,
 			       struct bpf_prog **fentry_progs,
-			       int fentry_cnt, int fexit_cnt)
+			       int fentry_cnt, int fexit_cnt, void *orig_call)
 {
+	bool native_entry = flags & BPF_TRAMP_F_NATIVE_ENTRY;
 	int args_off = 0;
 	int regs_off;
 	int stack_size;
 	int i;
 
-	if (flags != BPF_TRAMP_F_RESTORE_REGS || fexit_cnt)
+	if (native_entry) {
+		if (!IS_ENABLED(CONFIG_BPF_TRAMPOLINE_NATIVE) ||
+		    flags != (BPF_TRAMP_F_RESTORE_REGS |
+			     BPF_TRAMP_F_NATIVE_ENTRY) || fexit_cnt || !orig_call)
+			return -ENOTSUPP;
+	} else if (flags != BPF_TRAMP_F_RESTORE_REGS || fexit_cnt) {
 		return -ENOTSUPP;
+	}
 	if (fentry_cnt > BPF_MAX_TRAMP_PROGS)
 		return -E2BIG;
 	if (fentry_cnt && !fentry_progs)
@@ -1261,12 +1345,18 @@ static int emit_bpf_trampoline(struct jit_ctx *ctx,
 	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
 	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
 
-	regs_off = m->nr_args * sizeof(u64);
+	/* x8 is an ABI hidden-return pointer and must survive native hooks too. */
+	regs_off = (native_entry ? 9 : m->nr_args) * sizeof(u64);
 	stack_size = round_up(regs_off + 2 * sizeof(u64), 16);
 	emit(A64_SUB_I(1, A64_SP, A64_SP, stack_size), ctx);
 
-	for (i = 0; i < m->nr_args; i++)
-		emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	if (native_entry) {
+		for (i = 0; i < 9; i++)
+			emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	} else {
+		for (i = 0; i < m->nr_args; i++)
+			emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	}
 	emit(A64_STR64I(A64_R(19), A64_SP, regs_off), ctx);
 	emit(A64_STR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
@@ -1298,17 +1388,31 @@ static int emit_bpf_trampoline(struct jit_ctx *ctx,
 		emit_trampoline_call(ctx, (u64)__bpf_prog_exit);
 	}
 
-	for (i = 0; i < m->nr_args; i++)
-		emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	if (native_entry) {
+		for (i = 0; i < 9; i++)
+			emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	} else {
+		for (i = 0; i < m->nr_args; i++)
+			emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	}
 	emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), ctx);
 	emit(A64_LDR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
 	emit(A64_MOV(1, A64_SP, A64_FP), ctx);
 	emit(A64_POP(A64_FP, A64_LR, A64_SP), ctx);
 	emit(A64_POP(A64_FP, A64_R(9), A64_SP), ctx);
-	emit(A64_MOV(1, A64_R(10), A64_LR), ctx);
-	emit(A64_MOV(1, A64_LR, A64_R(9)), ctx);
-	emit(A64_RET(A64_R(10)), ctx);
+	if (native_entry) {
+		/* Continue after the reserved NOP patchpoint without linking. */
+		emit_addr_mov_i64(A64_R(10),
+				  (u64)orig_call +
+				  BPF_TRAMPOLINE_NATIVE_PATCH_INSNS *
+				  AARCH64_INSN_SIZE, ctx);
+		emit(A64_BR(A64_R(10)), ctx);
+	} else {
+		emit(A64_MOV(1, A64_R(10), A64_LR), ctx);
+		emit(A64_MOV(1, A64_LR, A64_R(9)), ctx);
+		emit(A64_RET(A64_R(10)), ctx);
+	}
 
 	/*
 	 * Each half of the trampoline page is a separate image. Check the
@@ -1345,7 +1449,7 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	 * the size afterward could corrupt the alternate image.
 	 */
 	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
-				  fentry_cnt, fexit_cnt);
+				  fentry_cnt, fexit_cnt, orig_call);
 	if (err)
 		return err;
 	expected_idx = ctx.idx;
@@ -1353,7 +1457,7 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	ctx.image = image;
 	ctx.idx = 0;
 	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
-				  fentry_cnt, fexit_cnt);
+				  fentry_cnt, fexit_cnt, orig_call);
 	if (err)
 		return err;
 	if (WARN_ON_ONCE(ctx.idx != expected_idx))

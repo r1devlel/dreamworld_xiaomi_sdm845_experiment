@@ -1518,6 +1518,17 @@ config BPF_SYSCALL
 	  Enable the bpf() system call that allows to manipulate eBPF
 	  programs and maps via file descriptors.
 
+config BPF_TRAMPOLINE_NATIVE
+	bool "Experimental ARM64 native BPF entry trampolines"
+	depends on ARM64 && BPF_SYSCALL && BPF_JIT && DEBUG_INFO_BTF && KALLSYMS
+	help
+	  Reserve four compiler-generated NOP instructions at ARM64 C function
+	  entries so an experimental BPF fentry trampoline can safely preserve
+	  argument registers before the kernel's legacy -pg instrumentation runs.
+	  This adds four instructions of entry padding to compiled functions and
+	  is intended for development kernels only. Native tracing remains
+	  unavailable unless the matching BTF attach/detach path is implemented.
+
 config BPF_JIT_ALWAYS_ON
 	bool "Permanently enable BPF JIT and remove BPF interpreter"
 	depends on BPF_SYSCALL && HAVE_EBPF_JIT && BPF_JIT
