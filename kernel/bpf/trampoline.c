@@ -282,8 +282,8 @@ int bpf_trampoline_attach_prog(struct bpf_prog *prog)
 	tr = bpf_trampoline_get(aux->attach_func_key,
 				&aux->attach_func_model,
 				aux->attach_func_addr);
-	if (!tr) {
-		err = -ENOMEM;
+	if (IS_ERR(tr)) {
+		err = PTR_ERR(tr);
 		goto out_unlock;
 	}
 	aux->trampoline = tr;
