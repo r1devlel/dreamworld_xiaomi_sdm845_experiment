@@ -761,6 +761,8 @@ struct bpf_trampoline *bpf_trampoline_get(u64 key,
 					 struct btf_func_model *model, void *addr);
 int bpf_trampoline_link_prog(struct bpf_prog *prog);
 int bpf_trampoline_unlink_prog(struct bpf_prog *prog);
+int bpf_trampoline_attach_prog(struct bpf_prog *prog);
+int bpf_trampoline_detach_prog(struct bpf_prog *prog);
 void bpf_trampoline_put(struct bpf_trampoline *tr);
 u64 notrace __bpf_prog_enter(void);
 void notrace __bpf_prog_exit(struct bpf_prog *prog, u64 start);
