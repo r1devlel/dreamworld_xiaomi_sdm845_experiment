@@ -228,9 +228,14 @@ void bpf_trampoline_put(struct bpf_trampoline *tr)
 	mutex_lock(&trampoline_mutex);
 	if (!refcount_dec_and_test(&tr->refcnt))
 		goto out;
-	if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FENTRY])) ||
-	    WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FEXIT]))) {
-		/* A linked image must never be freed. */
+	if (WARN_ON_ONCE(!hlist_empty(&tr->progs_hlist[BPF_TRAMP_FENTRY]) ||
+			   !hlist_empty(&tr->progs_hlist[BPF_TRAMP_FEXIT]))) {
+		/*
+		 * A linked image must never be freed. Restore an anchor
+		 * reference so a later lookup cannot increment a zero refcount.
+		 * This deliberately leaks the object rather than risking use-after-free.
+		 */
+		refcount_set(&tr->refcnt, 1);
 		goto out;
 	}
 	hlist_del(&tr->hlist);
