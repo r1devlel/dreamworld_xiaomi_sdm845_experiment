@@ -10027,8 +10027,17 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 				btf_id);
 			return -EINVAL;
 		}
+		/*
+		 * A name alone cannot distinguish identically named static
+		 * functions from different translation units. Until BTF IDs can be
+		 * mapped directly to addresses, only global functions are attachable.
+		 */
+		if (BTF_INFO_VLEN(t->info) != BTF_FUNC_GLOBAL) {
+			verbose(env, "native fentry requires a global function symbol\n");
+			return -EOPNOTSUPP;
+		}
 		proto = btf_type_by_id(btf_vmlinux, t->type);
-		if (!btf_type_is_func_proto(proto)) {
+		if (!proto || !btf_type_is_func_proto(proto)) {
 			verbose(env, "fentry target %s has no function prototype\n",
 				tname);
 			return -EINVAL;
