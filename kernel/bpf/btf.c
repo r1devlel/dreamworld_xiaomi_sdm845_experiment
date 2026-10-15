@@ -3426,35 +3426,54 @@ bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 		    const struct bpf_prog *prog,
 		    struct bpf_insn_access_aux *info)
 {
-	const struct btf_type *t = prog->aux->attach_func_proto;
+	const struct btf_type *func_proto = prog->aux->attach_func_proto;
 	const char *tname = prog->aux->attach_func_name;
 	struct bpf_verifier_log *log = info->log;
 	const struct btf_param *args;
-	u32 nr_args, arg;
+	const struct btf_type *t;
+	u32 nr_args, arg, type_id;
 
+	if (!func_proto || !btf_type_is_func_proto(func_proto)) {
+		bpf_log(log, "func '%s' has no valid BTF prototype\n", tname);
+		return false;
+	}
 	if (off % 8) {
 		bpf_log(log, "func '%s' offset %d is not multiple of 8\n",
 			tname, off);
 		return false;
 	}
 	arg = off / 8;
-	args = (const struct btf_param *)(t + 1);
-	nr_args = btf_type_vlen(t);
+	args = (const struct btf_param *)(func_proto + 1);
+	nr_args = btf_type_vlen(func_proto);
 	if (prog->aux->attach_btf_trace) {
 		/* skip first 'void *__data' argument in btf_trace_##name typedef */
 		args++;
 		nr_args--;
 	}
-	if (arg >= nr_args) {
-		bpf_log(log, "func '%s' doesn't have %d-th argument\n",
+	if (arg < nr_args) {
+		type_id = args[arg].type;
+	} else if (prog->expected_attach_type == BPF_TRACE_FEXIT &&
+		   arg == nr_args && func_proto->type) {
+		/* fexit contexts expose the original return value after the args. */
+		type_id = func_proto->type;
+	} else {
+		bpf_log(log, "func '%s' doesn't have %d-th context value\n",
 			tname, arg);
 		return false;
 	}
 
-	t = btf_type_by_id(btf_vmlinux, args[arg].type);
+	t = btf_type_by_id(btf_vmlinux, type_id);
+	if (!t) {
+		bpf_log(log, "func '%s' context value %d has an invalid type\n",
+			tname, arg);
+		return false;
+	}
 	/* skip modifiers */
-	while (btf_type_is_modifier(t))
+	while (btf_type_is_modifier(t)) {
 		t = btf_type_by_id(btf_vmlinux, t->type);
+		if (!t)
+			return false;
+	}
 	if (btf_type_is_int(t) || btf_type_is_enum(t))
 		/* accessing a scalar */
 		return true;
@@ -3467,10 +3486,7 @@ bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 		return false;
 	}
 	if (t->type == 0)
-		/* This is a pointer to void.
-		 * It is the same as scalar from the verifier safety pov.
-		 * No further pointer walking is allowed.
-		 */
+		/* This is a pointer to void; no further pointer walking is allowed. */
 		return true;
 
 	/* this is a pointer to another type */
@@ -3479,8 +3495,11 @@ bool btf_ctx_access(int off, int size, enum bpf_access_type type,
 
 	t = btf_type_by_id(btf_vmlinux, t->type);
 	/* skip modifiers */
-	while (btf_type_is_modifier(t))
+	while (btf_type_is_modifier(t)) {
 		t = btf_type_by_id(btf_vmlinux, t->type);
+		if (!t)
+			return false;
+	}
 	if (!btf_type_is_struct(t)) {
 		bpf_log(log,
 			"func '%s' arg%d type %s is not a struct\n",
