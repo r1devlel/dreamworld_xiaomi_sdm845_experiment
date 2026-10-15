@@ -1926,7 +1926,8 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 			err = -EINVAL;
 			goto out_put_prog;
 		}
-		if (prog->expected_attach_type == BPF_TRACE_FENTRY) {
+		if (prog->expected_attach_type == BPF_TRACE_FENTRY ||
+		    prog->expected_attach_type == BPF_TRACE_FEXIT) {
 			raw_tp = kzalloc(sizeof(*raw_tp), GFP_USER);
 			if (!raw_tp) {
 				err = -ENOMEM;
