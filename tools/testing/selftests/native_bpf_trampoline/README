@@ -1,0 +1,47 @@
+# Native ARM64 BPF trampoline selftest
+
+This is a **runtime test harness**, not a test that can be run successfully on an
+arbitrary Android kernel. It is intended for a disposable test device booted
+into a kernel built with:
+
+- `CONFIG_BPF_TRAMPOLINE_NATIVE=y`
+- `CONFIG_BPF_SYSCALL=y`
+- `CONFIG_BPF_JIT=y`
+- `CONFIG_DEBUG_INFO_BTF=y`
+- `CONFIG_KALLSYMS=y`
+
+The device must expose `/sys/kernel/btf/vmlinux`. Run the executable as root.
+
+## Build
+
+For a compile-only check on a Linux development host:
+
+```sh
+gcc -O2 -Wall -Wextra -Werror native_bpf_trampoline_test.c -o native_bpf_trampoline_test
+```
+
+## Runtime behavior
+
+The test reads vmlinux BTF and looks for a global getpid syscall implementation
+(`sys_getpid`, `__arm64_sys_getpid`, or `SyS_getpid`). It creates an array
+map with two counters, loads one `BPF_TRACE_FENTRY` program and one
+`BPF_TRACE_FEXIT` program, and attaches them through the experimental
+`BPF_RAW_TRACEPOINT_OPEN` trampoline-FD path in this branch. It calls getpid,
+then verifies that both counters increased. Closing the attachment FDs exercises
+the detach path.
+
+Exit status 0 means this particular fentry/fexit path ran during the test.
+Exit status 4 indicates a prerequisite is unavailable. Other nonzero statuses
+indicate a load, attach, map, or runtime-check failure.
+
+## Safety and limits
+
+This test is deliberately narrow. It does not establish that all BTF targets,
+function signatures, aggregate arguments, modules, or all return types are
+supported. It does not test every possible attach/detach race. A successful
+compile or CI run of the harness is **not** a runtime pass.
+
+Use a recoverable test device and a dedicated experimental build. Do not run it
+against a daily-use ROM or flash an experimental kernel solely because its
+compile checks are green. First validate the exact kernel image, device boot
+path, and recovery route.
