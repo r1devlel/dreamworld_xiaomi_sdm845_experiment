@@ -115,25 +115,26 @@ jobs:
           llvm-nm-18 out/arch/arm64/net/bpf_jit_comp.o | awk '{print $NF}' | grep -qx 'arch_prepare_bpf_trampoline'
           echo "Generic manager, native fentry/fexit lifecycle and ARM64 generator symbols verified."
 
-          # Validate the compiler reserved the exact 16-byte entry patchpoint.
-          # This checks emitted machine code, not only the CONFIG/symbol names.
-          native_target=do_exit
-          native_addr=$(llvm-nm-18 -n out/vmlinux | awk -v sym="$native_target" '$3 == sym && !found { addr=$1; found=1 } END { if (found) print addr }')
-          if [ -z "$native_addr" ]; then
-            echo "::error::Native patchpoint smoke-test target $native_target was not found"
-            exit 1
-          fi
-          native_start="0x$native_addr"
-          native_stop=$(python3 -c 'import sys; print(hex(int(sys.argv[1], 16) + 16))' "$native_addr")
-          native_ops=$(llvm-objdump-18 -d --start-address="$native_start" --stop-address="$native_stop" out/vmlinux | awk '/^[[:space:]]*[[:xdigit:]]+:/ { print $NF }')
+          # Check native entry patchpoints on both void and scalar-return functions.
+          # This is a compiler/disassembly smoke test, not a runtime BPF attach test.
           expected_native_ops=$(printf 'nop\nnop\nnop\nnop')
-          if [ "$native_ops" != "$expected_native_ops" ]; then
-            echo "::error::Expected four NOPs at $native_target entry for native BPF fentry"
-            echo "Observed entry instructions:"
-            printf '%s\n' "$native_ops"
-            exit 1
-          fi
-          echo "Native function entry patchpoint verified: $native_target begins with four NOPs."
+          for native_target in do_exit wake_up_process; do
+            native_addr=$(llvm-nm-18 -n out/vmlinux | awk -v sym="$native_target" '$3 == sym && !found { addr=$1; found=1 } END { if (found) print addr }')
+            if [ -z "$native_addr" ]; then
+              echo "::error::Native patchpoint smoke-test target $native_target was not found"
+              exit 1
+            fi
+            native_start="0x$native_addr"
+            native_stop=$(python3 -c 'import sys; print(hex(int(sys.argv[1], 16) + 16))' "$native_addr")
+            native_ops=$(llvm-objdump-18 -d --start-address="$native_start" --stop-address="$native_stop" out/vmlinux | awk '/^[[:space:]]*[[:xdigit:]]+:/ { print $NF }')
+            if [ "$native_ops" != "$expected_native_ops" ]; then
+              echo "::error::Expected four NOPs at $native_target entry for native BPF fentry/fexit"
+              echo "Observed entry instructions:"
+              printf '%s\n' "$native_ops"
+              exit 1
+            fi
+            echo "Native function entry patchpoint verified: $native_target begins with four NOPs."
+          done
 
       - name: Diagnose BPF, RCU, and XDP build state
         if: always()
