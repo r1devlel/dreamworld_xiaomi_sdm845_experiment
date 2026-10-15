@@ -1274,7 +1274,7 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	emit(A64_SUB_I(1, A64_SP, A64_SP, stack_size), &ctx);
 
 	for (i = 0; i < m->nr_args; i++)
-		emit(A64_STR64I(A64_R(i), A64_SP, args_off + i * sizeof(u64)),
+		emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)),
 		     &ctx);
 	emit(A64_STR64I(A64_R(19), A64_SP, regs_off), &ctx);
 	emit(A64_STR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), &ctx);
@@ -1308,7 +1308,7 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	}
 
 	for (i = 0; i < m->nr_args; i++)
-		emit(A64_LDR64I(A64_R(i), A64_SP, args_off + i * sizeof(u64)),
+		emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)),
 		     &ctx);
 	emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), &ctx);
 	emit(A64_LDR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), &ctx);
