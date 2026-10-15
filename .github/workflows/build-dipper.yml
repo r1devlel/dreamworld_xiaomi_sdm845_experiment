@@ -124,7 +124,7 @@ jobs:
             exit 1
           fi
           native_start="0x$native_addr"
-          native_stop=$(printf '0x%x' "$((0x$native_addr + 16))")
+          native_stop=$(python3 -c 'import sys; print(hex(int(sys.argv[1], 16) + 16))' "$native_addr")
           native_ops=$(llvm-objdump-18 -d --start-address="$native_start" --stop-address="$native_stop" out/vmlinux | awk '/^[[:space:]]*[[:xdigit:]]+:/ { print $NF }')
           expected_native_ops=$(printf 'nop\nnop\nnop\nnop')
           if [ "$native_ops" != "$expected_native_ops" ]; then
