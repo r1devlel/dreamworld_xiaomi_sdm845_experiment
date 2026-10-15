@@ -444,7 +444,12 @@ struct bpf_prog_aux {
 	bool attach_btf_trace; /* true if attaching to BTF-enabled raw tp */
 	enum bpf_tramp_prog_type trampoline_prog_type;
 	struct bpf_trampoline *trampoline;
+	/* Serializes attachment lifetime for this program. */
+	struct mutex trampoline_mutex;
 	struct hlist_node tramp_hlist;
+	struct btf_func_model attach_func_model;
+	void *attach_func_addr;
+	u64 attach_func_key;
 	/* BTF_KIND_FUNC_PROTO for valid attach_btf_id */
 	const struct btf_type *attach_func_proto;
 	/* function name for valid attach_btf_id */
