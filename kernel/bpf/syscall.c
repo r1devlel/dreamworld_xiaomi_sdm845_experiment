@@ -1860,21 +1860,36 @@ static int bpf_prog_attach_check_attach_type(const struct bpf_prog *prog,
 }
 
 struct bpf_raw_tracepoint {
- 	struct bpf_raw_event_map *btp;
- 	struct bpf_prog *prog;
+	struct bpf_raw_event_map *btp;
+	struct bpf_prog *prog;
+	struct bpf_trampoline *trampoline;
 };
 
 static int bpf_raw_tracepoint_release(struct inode *inode, struct file *filp)
 {
- 	struct bpf_raw_tracepoint *raw_tp = filp->private_data;
- 
- 	if (raw_tp->prog) {
- 		bpf_probe_unregister(raw_tp->btp, raw_tp->prog);
- 		bpf_prog_put(raw_tp->prog);
- 	}
-	bpf_put_raw_tracepoint(raw_tp->btp);
- 	kfree(raw_tp);
- 	return 0;
+	struct bpf_raw_tracepoint *raw_tp = filp->private_data;
+	int err = 0;
+
+	if (raw_tp->prog) {
+		if (raw_tp->trampoline) {
+			err = bpf_trampoline_detach_prog(raw_tp->prog);
+			if (err) {
+				/*
+				 * The entry may still jump into this program. Pin it
+				 * rather than freeing executable code that remains reachable.
+				 */
+				WARN_ON_ONCE(1);
+				bpf_prog_inc(raw_tp->prog);
+			}
+		} else if (raw_tp->btp) {
+			bpf_probe_unregister(raw_tp->btp, raw_tp->prog);
+		}
+		bpf_prog_put(raw_tp->prog);
+	}
+	if (raw_tp->btp)
+		bpf_put_raw_tracepoint(raw_tp->btp);
+	kfree(raw_tp);
+	return err;
  }
 
 static const struct file_operations bpf_raw_tp_fops = {
@@ -1907,13 +1922,39 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 
 	if (prog->type == BPF_PROG_TYPE_TRACING) {
 		if (attr->raw_tracepoint.name) {
-			/* raw_tp name should not be specified in raw_tp
-			 * programs that were verified via in-kernel BTF info
-			 */
+			/* BTF-attached tracing programs supply their target at load time. */
 			err = -EINVAL;
 			goto out_put_prog;
 		}
-		/* raw_tp name is taken from type name instead */
+		if (prog->expected_attach_type == BPF_TRACE_FENTRY) {
+			raw_tp = kzalloc(sizeof(*raw_tp), GFP_USER);
+			if (!raw_tp) {
+				err = -ENOMEM;
+				goto out_put_prog;
+			}
+			raw_tp->prog = prog;
+			err = bpf_trampoline_attach_prog(prog);
+			if (err)
+				goto out_free_tramp_tp;
+			raw_tp->trampoline = prog->aux->trampoline;
+			tp_fd = anon_inode_getfd("bpf-raw-tracepoint",
+						 &bpf_raw_tp_fops, raw_tp,
+						 O_CLOEXEC);
+			if (tp_fd < 0) {
+				err = tp_fd;
+				if (bpf_trampoline_detach_prog(prog)) {
+					WARN_ON_ONCE(1);
+					bpf_prog_inc(prog);
+				}
+				goto out_free_tramp_tp;
+			}
+			return tp_fd;
+		}
+		if (prog->expected_attach_type != BPF_TRACE_RAW_TP) {
+			err = -EINVAL;
+			goto out_put_prog;
+		}
+		/* BTF raw tracepoint name comes from the typedef target. */
 		tp_name = prog->aux->attach_func_name;
 	} else {
 		if (strncpy_from_user(buf,
@@ -1957,6 +1998,9 @@ static int bpf_raw_tracepoint_open(const union bpf_attr *attr)
 out_free_tp:
  	kfree(raw_tp);
  	return err;
+out_free_tramp_tp:
+	kfree(raw_tp);
+	goto out_put_prog;
 out_put_btp:
  	bpf_put_raw_tracepoint(btp);
 out_put_prog:
