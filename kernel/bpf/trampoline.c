@@ -258,6 +258,80 @@ out:
 	return err;
 }
 
+/*
+ * Attach native fentry programs only after the verifier has resolved and
+ * validated a core-kernel BTF function target. The per-program mutex makes
+ * the trampoline reference and hlist membership a single attachment state.
+ */
+int bpf_trampoline_attach_prog(struct bpf_prog *prog)
+{
+	struct bpf_prog_aux *aux = prog->aux;
+	struct bpf_trampoline *tr = NULL;
+	int err;
+
+	mutex_lock(&aux->trampoline_mutex);
+	if (aux->trampoline || !hlist_unhashed(&aux->tramp_hlist)) {
+		err = -EBUSY;
+		goto out_unlock;
+	}
+	if (!aux->attach_func_addr || !aux->attach_func_key) {
+		err = -EINVAL;
+		goto out_unlock;
+	}
+
+	tr = bpf_trampoline_get(aux->attach_func_key,
+				&aux->attach_func_model,
+				aux->attach_func_addr);
+	if (!tr) {
+		err = -ENOMEM;
+		goto out_unlock;
+	}
+	aux->trampoline = tr;
+	err = bpf_trampoline_link_prog(prog);
+	if (err)
+		aux->trampoline = NULL;
+	mutex_unlock(&aux->trampoline_mutex);
+
+	if (err)
+		bpf_trampoline_put(tr);
+	return err;
+
+out_unlock:
+	mutex_unlock(&aux->trampoline_mutex);
+	return err;
+}
+
+int bpf_trampoline_detach_prog(struct bpf_prog *prog)
+{
+	struct bpf_prog_aux *aux = prog->aux;
+	struct bpf_trampoline *tr;
+	int err;
+
+	mutex_lock(&aux->trampoline_mutex);
+	tr = aux->trampoline;
+	if (!tr) {
+		err = -ENOENT;
+		goto out_unlock;
+	}
+	err = bpf_trampoline_unlink_prog(prog);
+	if (!err)
+		aux->trampoline = NULL;
+	mutex_unlock(&aux->trampoline_mutex);
+
+	/*
+	 * unlink keeps the hlist reference when text restoration fails. Leave
+	 * both the program and trampoline alive in that case, so a still-active
+	 * entry patch cannot jump into freed BPF program memory.
+	 */
+	if (!err)
+		bpf_trampoline_put(tr);
+	return err;
+
+out_unlock:
+	mutex_unlock(&aux->trampoline_mutex);
+	return err;
+}
+
 void bpf_trampoline_put(struct bpf_trampoline *tr)
 {
 	if (!tr)
