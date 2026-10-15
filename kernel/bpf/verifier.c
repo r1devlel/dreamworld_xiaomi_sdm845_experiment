@@ -19,6 +19,7 @@
 #include <linux/btf.h>
 #include <linux/bpf_verifier.h>
 #include <linux/filter.h>
+#include <linux/kallsyms.h>
 #include <net/netlink.h>
 #include <linux/file.h>
 #include <linux/vmalloc.h>
