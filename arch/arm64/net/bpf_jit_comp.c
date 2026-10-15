@@ -1322,5 +1322,9 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 
 	if (ctx.idx * sizeof(u32) > PAGE_SIZE / 2)
 		return -E2BIG;
+
+	/* Make the generated trampoline visible to the instruction cache. */
+	flush_icache_range((unsigned long)image,
+			   (unsigned long)image + ctx.idx * sizeof(u32));
 	return 0;
 }
