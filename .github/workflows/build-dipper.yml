@@ -189,6 +189,15 @@ jobs:
             echo "MISSING out/arch/arm64/boot/Image.gz-dtb"
           fi
 
+      - name: Compile native BPF runtime selftest harness
+        run: |
+          set -euxo pipefail
+          gcc -O2 -Wall -Wextra -Werror \
+            tools/testing/selftests/native_bpf_trampoline/native_bpf_trampoline_test.c \
+            -o out/native_bpf_trampoline_test
+          test -s out/native_bpf_trampoline_test
+          echo "Native fentry/fexit runtime harness compiled; it is not executed on this host."
+
       - name: Upload build artifacts
         if: success()
         uses: actions/upload-artifact@v4
