@@ -746,6 +746,8 @@ static inline int bpf_map_attr_numa_node(const union bpf_attr *attr)
 const struct bpf_func_proto *bpf_base_func_proto(enum bpf_func_id func_id, const struct bpf_prog *prog);
 
 #ifdef CONFIG_BPF_JIT
+void *bpf_jit_alloc_exec(unsigned long size);
+void bpf_jit_free_exec(void *addr);
 struct bpf_trampoline *bpf_trampoline_lookup(u64 key);
 int bpf_trampoline_link_prog(struct bpf_prog *prog);
 int bpf_trampoline_unlink_prog(struct bpf_prog *prog);
