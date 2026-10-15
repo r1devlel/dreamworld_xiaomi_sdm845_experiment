@@ -9904,6 +9904,64 @@ static void print_verification_stats(struct bpf_verifier_env *env)
 		env->peak_states, env->longest_mark_read_walk);
 }
 
+/*
+ * Build the small ARM64 trampoline ABI from a BTF function prototype. This
+ * first native stage accepts only register-sized scalar and pointer args.
+ */
+static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
+				     const struct btf_type *proto,
+				     struct btf_func_model *model)
+{
+	const struct btf_param *args = (const struct btf_param *)(proto + 1);
+	u32 nr_args = BTF_INFO_VLEN(proto->info);
+	u32 i, type_id, size;
+	const struct btf_type *type;
+
+	memset(model, 0, sizeof(*model));
+	if (nr_args > 8) {
+		verbose(env, "native fentry supports at most 8 arguments\n");
+		return -EOPNOTSUPP;
+	}
+	if (nr_args && !args[nr_args - 1].type) {
+		verbose(env, "native fentry does not support variadic functions\n");
+		return -EOPNOTSUPP;
+	}
+
+	model->nr_args = nr_args;
+	if (proto->type) {
+		type_id = proto->type;
+		type = btf_type_id_size(btf_vmlinux, &type_id, &size);
+		if (!type || size > 255) {
+			verbose(env, "native fentry return type is not supported\n");
+			return -EOPNOTSUPP;
+		}
+		model->ret_size = size;
+	}
+
+	for (i = 0; i < nr_args; i++) {
+		type_id = args[i].type;
+		type = btf_type_id_size(btf_vmlinux, &type_id, &size);
+		if (!type || !size || size > sizeof(u64)) {
+			verbose(env, "native fentry argument %u is not register-sized\n",
+				i + 1);
+			return -EOPNOTSUPP;
+		}
+		switch (BTF_INFO_KIND(type->info)) {
+		case BTF_KIND_INT:
+		case BTF_KIND_ENUM:
+		case BTF_KIND_PTR:
+			break;
+		default:
+			verbose(env, "native fentry argument %u is not scalar/pointer\n",
+				i + 1);
+			return -EOPNOTSUPP;
+		}
+		model->arg_size[i] = size;
+	}
+
+	return 0;
+}
+
 static int check_attach_btf_id(struct bpf_verifier_env *env)
 {
 	struct bpf_prog *prog = env->prog;
@@ -9945,20 +10003,56 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		tname += sizeof(prefix) - 1;
 		t = btf_type_by_id(btf_vmlinux, t->type);
 		if (!btf_type_is_ptr(t))
-			/* should never happen in valid vmlinux build */
 			return -EINVAL;
 		t = btf_type_by_id(btf_vmlinux, t->type);
 		if (!btf_type_is_func_proto(t))
-			/* should never happen in valid vmlinux build */
 			return -EINVAL;
 
-		/* remember two read only pointers that are valid for
-		 * the life time of the kernel
-		 */
 		prog->aux->attach_func_name = tname;
 		prog->aux->attach_func_proto = t;
 		prog->aux->attach_btf_trace = true;
 		return 0;
+	case BPF_TRACE_FENTRY: {
+		struct btf_func_model model;
+		const struct btf_type *proto;
+		unsigned long addr;
+		int err;
+
+		if (!IS_ENABLED(CONFIG_BPF_TRAMPOLINE_NATIVE)) {
+			verbose(env, "native fentry trampoline is disabled\n");
+			return -EOPNOTSUPP;
+		}
+		if (!btf_type_is_func(t)) {
+			verbose(env, "fentry target %u is not a BTF function\n",
+				btf_id);
+			return -EINVAL;
+		}
+		proto = btf_type_by_id(btf_vmlinux, t->type);
+		if (!btf_type_is_func_proto(proto)) {
+			verbose(env, "fentry target %s has no function prototype\n",
+				tname);
+			return -EINVAL;
+		}
+		err = btf_func_model_for_fentry(env, proto, &model);
+		if (err)
+			return err;
+		addr = kallsyms_lookup_name(tname);
+		if (!addr) {
+			verbose(env, "fentry target %s has no core-kernel symbol\n",
+				tname);
+			return -ENOENT;
+		}
+
+		prog->aux->attach_func_name = tname;
+		prog->aux->attach_func_proto = proto;
+		prog->aux->attach_func_model = model;
+		prog->aux->attach_func_addr = (void *)addr;
+		prog->aux->attach_func_key = btf_id;
+		return 0;
+	}
+	case BPF_TRACE_FEXIT:
+		verbose(env, "native fexit is not implemented yet\n");
+		return -EOPNOTSUPP;
 	default:
 		return -EINVAL;
 	}
