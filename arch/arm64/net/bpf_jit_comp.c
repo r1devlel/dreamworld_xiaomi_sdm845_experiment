@@ -1305,28 +1305,52 @@ static void emit_trampoline_call(struct jit_ctx *ctx, u64 addr)
 	emit(A64_BLR(A64_R(10)), ctx);
 }
 
+/*
+ * Generate the first-stage ARM64 BPF trampoline. Native entry hooks use a
+ * compiler-reserved four-NOP patch window. The initial ABI supports register
+ * sized scalar/pointer arguments and, for fexit, void/scalar/pointer returns.
+ */
 static int emit_bpf_trampoline(struct jit_ctx *ctx,
 			       struct btf_func_model *m, u32 flags,
 			       struct bpf_prog **fentry_progs,
-			       int fentry_cnt, int fexit_cnt, void *orig_call)
+			       int fentry_cnt,
+			       struct bpf_prog **fexit_progs,
+			       int fexit_cnt, void *orig_call)
 {
 	bool native_entry = flags & BPF_TRAMP_F_NATIVE_ENTRY;
+	bool call_orig = flags & BPF_TRAMP_F_CALL_ORIG;
+	bool has_ret = fexit_cnt && m->ret_size;
 	int args_off = 0;
+	int x8_off;
 	int regs_off;
 	int stack_size;
+	int context_slots;
 	int i;
 
 	if (native_entry) {
-		if (!IS_ENABLED(CONFIG_BPF_TRAMPOLINE_NATIVE) ||
-		    flags != (BPF_TRAMP_F_RESTORE_REGS |
-			     BPF_TRAMP_F_NATIVE_ENTRY) || fexit_cnt || !orig_call)
+		if (!IS_ENABLED(CONFIG_BPF_TRAMPOLINE_NATIVE) || !orig_call)
 			return -ENOTSUPP;
-	} else if (flags != BPF_TRAMP_F_RESTORE_REGS || fexit_cnt) {
+		if (fexit_cnt) {
+			if (flags != (BPF_TRAMP_F_CALL_ORIG |
+				      BPF_TRAMP_F_SKIP_FRAME |
+				      BPF_TRAMP_F_NATIVE_ENTRY) || !call_orig)
+				return -ENOTSUPP;
+			if (m->ret_size > sizeof(u64))
+				return -ENOTSUPP;
+		} else if (flags != (BPF_TRAMP_F_RESTORE_REGS |
+				     BPF_TRAMP_F_NATIVE_ENTRY) || call_orig) {
+			return -ENOTSUPP;
+		}
+	} else if (flags != BPF_TRAMP_F_RESTORE_REGS ||
+		   fexit_cnt || call_orig) {
 		return -ENOTSUPP;
 	}
-	if (fentry_cnt > BPF_MAX_TRAMP_PROGS)
+
+	if (fentry_cnt < 0 || fexit_cnt < 0 ||
+	    fentry_cnt + fexit_cnt > BPF_MAX_TRAMP_PROGS)
 		return -E2BIG;
-	if (fentry_cnt && !fentry_progs)
+	if ((fentry_cnt && !fentry_progs) ||
+	    (fexit_cnt && !fexit_progs))
 		return -EINVAL;
 	if (m->nr_args > 8)
 		return -ENOTSUPP;
@@ -1336,27 +1360,30 @@ static int emit_bpf_trampoline(struct jit_ctx *ctx,
 			return -ENOTSUPP;
 
 	/*
-	 * The patch site saves the original caller LR in x9, then branches
-	 * here with BL. Preserve both return addresses and maintain a 16-byte
-	 * aligned stack while the BPF programs execute.
+	 * The native patchpoint uses BR and leaves the original caller LR intact.
+	 * Keep the BTF context contiguous at SP. Preserve x8 separately because
+	 * AAPCS64 uses it for indirect structure returns.
+	 */
+	context_slots = m->nr_args + (has_ret ? 1 : 0);
+	x8_off = context_slots * sizeof(u64);
+	regs_off = native_entry ? x8_off + sizeof(u64) :
+			   m->nr_args * sizeof(u64);
+	stack_size = round_up(regs_off + 2 * sizeof(u64), 16);
+
+	/*
+	 * Preserve the entry frame and caller LR. All generated stack changes
+	 * remain 16-byte aligned as required by AAPCS64.
 	 */
 	emit(A64_PUSH(A64_FP, A64_R(9), A64_SP), ctx);
 	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
 	emit(A64_PUSH(A64_FP, A64_LR, A64_SP), ctx);
 	emit(A64_MOV(1, A64_FP, A64_SP), ctx);
-
-	/* x8 is an ABI hidden-return pointer and must survive native hooks too. */
-	regs_off = (native_entry ? 9 : m->nr_args) * sizeof(u64);
-	stack_size = round_up(regs_off + 2 * sizeof(u64), 16);
 	emit(A64_SUB_I(1, A64_SP, A64_SP, stack_size), ctx);
 
-	if (native_entry) {
-		for (i = 0; i < 9; i++)
-			emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
-	} else {
-		for (i = 0; i < m->nr_args; i++)
-			emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
-	}
+	for (i = 0; i < m->nr_args; i++)
+		emit(A64_STR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	if (native_entry)
+		emit(A64_STR64I(A64_R(8), A64_SP, x8_off), ctx);
 	emit(A64_STR64I(A64_R(19), A64_SP, regs_off), ctx);
 	emit(A64_STR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
@@ -1388,21 +1415,74 @@ static int emit_bpf_trampoline(struct jit_ctx *ctx,
 		emit_trampoline_call(ctx, (u64)__bpf_prog_exit);
 	}
 
-	if (native_entry) {
-		for (i = 0; i < 9; i++)
-			emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
-	} else {
-		for (i = 0; i < m->nr_args; i++)
-			emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	/* Restore the original arguments before optionally running the target. */
+	for (i = 0; i < m->nr_args; i++)
+		emit(A64_LDR64I(i, A64_SP, args_off + i * sizeof(u64)), ctx);
+	if (native_entry)
+		emit(A64_LDR64I(A64_R(8), A64_SP, x8_off), ctx);
+
+	if (call_orig) {
+		/*
+		 * Re-enter the original function after its reserved NOP window.
+		 * BLR supplies a return address inside this trampoline so fexit
+		 * programs can observe the original function's result.
+		 */
+		emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), ctx);
+		emit(A64_LDR64I(A64_R(20), A64_SP,
+				regs_off + sizeof(u64)), ctx);
+		emit_addr_mov_i64(A64_R(10),
+				  (u64)orig_call +
+				  BPF_TRAMPOLINE_NATIVE_PATCH_INSNS *
+				  AARCH64_INSN_SIZE, ctx);
+		emit(A64_BLR(A64_R(10)), ctx);
+		if (has_ret)
+			emit(A64_STR64I(A64_R(0), A64_SP,
+				       args_off + m->nr_args * sizeof(u64)), ctx);
+
+		for (i = 0; i < fexit_cnt; i++) {
+			struct bpf_prog *prog = fexit_progs[i];
+
+			if (!prog || !prog->bpf_func)
+				return -EINVAL;
+
+			emit_addr_mov_i64(A64_R(19), (u64)prog, ctx);
+			emit_trampoline_call(ctx, (u64)__bpf_prog_enter);
+			emit(A64_MOV(1, A64_R(20), A64_R(0)), ctx);
+
+			/* Context is args[] followed by the optional return value. */
+			emit(A64_MOV(1, A64_R(0), A64_SP), ctx);
+			if (!prog->jited) {
+				emit_a64_mov_i64(A64_R(10),
+						 offsetof(struct bpf_prog, insnsi), ctx);
+				emit(A64_LDR64(A64_R(1), A64_R(19), A64_R(10)), ctx);
+			}
+			emit_a64_mov_i64(A64_R(10),
+					offsetof(struct bpf_prog, bpf_func), ctx);
+			emit(A64_LDR64(A64_R(10), A64_R(19), A64_R(10)), ctx);
+			emit(A64_BLR(A64_R(10)), ctx);
+
+			/* __bpf_prog_exit(prog, start) */
+			emit(A64_MOV(1, A64_R(0), A64_R(19)), ctx);
+			emit(A64_MOV(1, A64_R(1), A64_R(20)), ctx);
+			emit_trampoline_call(ctx, (u64)__bpf_prog_exit);
+		}
 	}
+
+	if (has_ret)
+		emit(A64_LDR64I(A64_R(0), A64_SP,
+				args_off + m->nr_args * sizeof(u64)), ctx);
 	emit(A64_LDR64I(A64_R(19), A64_SP, regs_off), ctx);
 	emit(A64_LDR64I(A64_R(20), A64_SP, regs_off + sizeof(u64)), ctx);
 
 	emit(A64_MOV(1, A64_SP, A64_FP), ctx);
 	emit(A64_POP(A64_FP, A64_LR, A64_SP), ctx);
 	emit(A64_POP(A64_FP, A64_R(9), A64_SP), ctx);
-	if (native_entry) {
-		/* Continue after the reserved NOP patchpoint without linking. */
+
+	if (native_entry && call_orig) {
+		/* Return the original function result to its original caller. */
+		emit(A64_RET(A64_LR), ctx);
+	} else if (native_entry) {
+		/* fentry-only: continue after the reserved 16-byte NOP window. */
 		emit_addr_mov_i64(A64_R(10),
 				  (u64)orig_call +
 				  BPF_TRAMPOLINE_NATIVE_PATCH_INSNS *
@@ -1448,16 +1528,16 @@ int arch_prepare_bpf_trampoline(void *image, struct btf_func_model *m,
 	 * into two halves by the generic manager, so writing first and checking
 	 * the size afterward could corrupt the alternate image.
 	 */
-	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
-				  fentry_cnt, fexit_cnt, orig_call);
+	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs, fentry_cnt,
+				  fexit_progs, fexit_cnt, orig_call);
 	if (err)
 		return err;
 	expected_idx = ctx.idx;
 
 	ctx.image = image;
 	ctx.idx = 0;
-	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs,
-				  fentry_cnt, fexit_cnt, orig_call);
+	err = emit_bpf_trampoline(&ctx, m, flags, fentry_progs, fentry_cnt,
+				  fexit_progs, fexit_cnt, orig_call);
 	if (err)
 		return err;
 	if (WARN_ON_ONCE(ctx.idx != expected_idx))
