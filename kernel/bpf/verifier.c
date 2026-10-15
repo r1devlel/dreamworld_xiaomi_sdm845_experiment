@@ -9905,12 +9905,12 @@ static void print_verification_stats(struct bpf_verifier_env *env)
 }
 
 /*
- * Build the small ARM64 trampoline ABI from a BTF function prototype. This
- * first native stage accepts only register-sized scalar and pointer args.
+ * Build the supported ARM64 trampoline ABI from a BTF function prototype.
+ * The first native stage accepts register-sized scalar, enum and pointer args.
  */
-static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
-				     const struct btf_type *proto,
-				     struct btf_func_model *model)
+static int btf_func_model_for_native_tracing(struct bpf_verifier_env *env,
+					     const struct btf_type *proto,
+					     struct btf_func_model *model)
 {
 	const struct btf_param *args = (const struct btf_param *)(proto + 1);
 	u32 nr_args = BTF_INFO_VLEN(proto->info);
@@ -9919,11 +9919,11 @@ static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
 
 	memset(model, 0, sizeof(*model));
 	if (nr_args > 8) {
-		verbose(env, "native fentry supports at most 8 arguments\n");
+		verbose(env, "native tracing supports at most 8 arguments\n");
 		return -EOPNOTSUPP;
 	}
 	if (nr_args && !args[nr_args - 1].type) {
-		verbose(env, "native fentry does not support variadic functions\n");
+		verbose(env, "native tracing does not support variadic functions\n");
 		return -EOPNOTSUPP;
 	}
 
@@ -9932,7 +9932,7 @@ static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
 		type_id = proto->type;
 		type = btf_type_id_size(btf_vmlinux, &type_id, &size);
 		if (!type || size > 255) {
-			verbose(env, "native fentry return type is not supported\n");
+			verbose(env, "native tracing return type has no supported size\n");
 			return -EOPNOTSUPP;
 		}
 		model->ret_size = size;
@@ -9942,7 +9942,7 @@ static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
 		type_id = args[i].type;
 		type = btf_type_id_size(btf_vmlinux, &type_id, &size);
 		if (!type || !size || size > sizeof(u64)) {
-			verbose(env, "native fentry argument %u is not register-sized\n",
+			verbose(env, "native tracing argument %u is not register-sized\n",
 				i + 1);
 			return -EOPNOTSUPP;
 		}
@@ -9952,7 +9952,7 @@ static int btf_func_model_for_fentry(struct bpf_verifier_env *env,
 		case BTF_KIND_PTR:
 			break;
 		default:
-			verbose(env, "native fentry argument %u is not scalar/pointer\n",
+			verbose(env, "native tracing argument %u is not scalar/pointer\n",
 				i + 1);
 			return -EOPNOTSUPP;
 		}
@@ -10012,18 +10012,22 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		prog->aux->attach_func_proto = t;
 		prog->aux->attach_btf_trace = true;
 		return 0;
-	case BPF_TRACE_FENTRY: {
+	case BPF_TRACE_FENTRY:
+	case BPF_TRACE_FEXIT: {
 		struct btf_func_model model;
 		const struct btf_type *proto;
+		const struct btf_type *ret_type;
 		unsigned long addr;
+		u32 ret_type_id, ret_size;
 		int err;
+		bool is_fexit = prog->expected_attach_type == BPF_TRACE_FEXIT;
 
 		if (!IS_ENABLED(CONFIG_BPF_TRAMPOLINE_NATIVE)) {
-			verbose(env, "native fentry trampoline is disabled\n");
+			verbose(env, "native BPF trampoline is disabled\n");
 			return -EOPNOTSUPP;
 		}
 		if (!btf_type_is_func(t)) {
-			verbose(env, "fentry target %u is not a BTF function\n",
+			verbose(env, "native tracing target %u is not a BTF function\n",
 				btf_id);
 			return -EINVAL;
 		}
@@ -10033,21 +10037,40 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		 * mapped directly to addresses, only global functions are attachable.
 		 */
 		if (BTF_INFO_VLEN(t->info) != BTF_FUNC_GLOBAL) {
-			verbose(env, "native fentry requires a global function symbol\n");
+			verbose(env, "native tracing requires a global function symbol\n");
 			return -EOPNOTSUPP;
 		}
 		proto = btf_type_by_id(btf_vmlinux, t->type);
 		if (!proto || !btf_type_is_func_proto(proto)) {
-			verbose(env, "fentry target %s has no function prototype\n",
+			verbose(env, "native target %s has no function prototype\n",
 				tname);
 			return -EINVAL;
 		}
-		err = btf_func_model_for_fentry(env, proto, &model);
+		err = btf_func_model_for_native_tracing(env, proto, &model);
 		if (err)
 			return err;
+
+		/*
+		 * The current ARM64 fexit generator preserves only the native
+		 * scalar/pointer return register. Reject structure/aggregate returns
+		 * rather than exposing a truncated or misinterpreted value.
+		 * A void function has no return-value context slot.
+		 */
+		if (is_fexit && proto->type) {
+			ret_type_id = proto->type;
+			ret_type = btf_type_id_size(btf_vmlinux, &ret_type_id,
+						    &ret_size);
+			if (!ret_type || ret_size > sizeof(u64) ||
+			    (!btf_type_is_int(ret_type) &&
+			     !btf_type_is_enum(ret_type) &&
+			     !btf_type_is_ptr(ret_type))) {
+				verbose(env, "native fexit supports only void or scalar/pointer return values up to 64 bits\n");
+				return -EOPNOTSUPP;
+			}
+		}
 		addr = kallsyms_lookup_name(tname);
 		if (!addr) {
-			verbose(env, "fentry target %s has no core-kernel symbol\n",
+			verbose(env, "native tracing target %s has no core-kernel symbol\n",
 				tname);
 			return -ENOENT;
 		}
@@ -10059,9 +10082,6 @@ static int check_attach_btf_id(struct bpf_verifier_env *env)
 		prog->aux->attach_func_key = btf_id;
 		return 0;
 	}
-	case BPF_TRACE_FEXIT:
-		verbose(env, "native fexit is not implemented yet\n");
-		return -EOPNOTSUPP;
 	default:
 		return -EINVAL;
 	}
