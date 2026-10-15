@@ -101,6 +101,8 @@ struct bpf_prog *bpf_prog_alloc_no_stats(unsigned int size, gfp_t gfp_extra_flag
 
 	fp->pages = size / PAGE_SIZE;
 	fp->aux = aux;
+	mutex_init(&aux->trampoline_mutex);
+	INIT_HLIST_NODE(&aux->tramp_hlist);
 	fp->aux->prog = fp;
 	fp->jit_requested = ebpf_jit_enabled();
 
