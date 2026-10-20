@@ -192,7 +192,7 @@ gen_btf()
 	fi
 
 	info "BTF" "${2}"
-	vmlinux_link "" "${1}"
+	vmlinux_link "" "${1}" || return 1
 	LLVM_OBJCOPY=${OBJCOPY} ${PAHOLE} -J "${1}" || return 1
 
 	# Keep only .BTF as a relocatable, allocatable input section. The final
@@ -367,9 +367,11 @@ fi
 
 btf_vmlinux_bin_o=""
 if [ -n "${CONFIG_DEBUG_INFO_BTF}" ]; then
-	if gen_btf .tmp_vmlinux.btf .btf.vmlinux.bin.o; then
-		btf_vmlinux_bin_o=.btf.vmlinux.bin.o
+	if ! gen_btf .tmp_vmlinux.btf .btf.vmlinux.bin.o; then
+		echo >&2 "ERROR: failed to generate the vmlinux BTF object"
+		exit 1
 	fi
+	btf_vmlinux_bin_o=.btf.vmlinux.bin.o
 fi
 
 kallsymso=""
