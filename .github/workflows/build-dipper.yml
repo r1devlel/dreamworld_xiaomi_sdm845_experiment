@@ -144,15 +144,31 @@ jobs:
           # A green build does not prove that CONFIG_DEBUG_INFO_BTF produced a
           # usable blob. The section and the boundary symbols are what
           # sysfs_btf.c uses to serve /sys/kernel/btf/vmlinux.
-          llvm-readelf-18 -S out/vmlinux | grep -q '\.BTF'
-          llvm-nm-18 out/vmlinux | awk '{print $NF}' | grep -qx '__start_BTF'
-          llvm-nm-18 out/vmlinux | awk '{print $NF}' | grep -qx '__stop_BTF'
+          #
+          # Never pipe straight into `grep -q`: grep exits at the first match,
+          # the producer dies of SIGPIPE (LLVM tools exit 74), and pipefail
+          # then fails a check that actually succeeded. Dump to files first.
+          llvm-readelf-18 -S out/vmlinux > out/vmlinux.sections
+          grep -q '\.BTF' out/vmlinux.sections
+
+          llvm-nm-18 out/vmlinux > out/vmlinux.nm
+          awk '{print $NF}' out/vmlinux.nm > out/vmlinux.symbols
+          grep -qx '__start_BTF' out/vmlinux.symbols
+          grep -qx '__stop_BTF' out/vmlinux.symbols
 
           llvm-objcopy-18 --dump-section .BTF=out/vmlinux.btf out/vmlinux
           btf_size=$(stat -c%s out/vmlinux.btf)
           test "$btf_size" -gt 100000
           magic=$(od -An -tx1 -N4 out/vmlinux.btf | tr -d ' \n')
           test "$magic" = "9feb0100"
+
+          # sysfs_btf.c exposes [__start_BTF, __stop_BTF); those symbols must
+          # describe the real section, not an empty placeholder resolved at
+          # link time.
+          btf_start=$(awk '$NF == "__start_BTF" {print $1}' out/vmlinux.nm)
+          btf_stop=$(awk '$NF == "__stop_BTF" {print $1}' out/vmlinux.nm)
+          test $((0x$btf_stop - 0x$btf_start)) -eq "$btf_size"
+
           echo "Embedded vmlinux BTF verified: ${btf_size} bytes, magic ${magic}."
 
       - name: Diagnose BPF, RCU, and XDP build state
