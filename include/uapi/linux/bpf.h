@@ -102,9 +102,22 @@ enum bpf_cmd {
 	BPF_RAW_TRACEPOINT_OPEN,
 	BPF_BTF_LOAD = 18,
 	BPF_BTF_GET_FD_BY_ID,
+	BPF_TASK_FD_QUERY = 20,
 	BPF_MAP_LOOKUP_AND_DELETE_ELEM = 21,
 	BPF_MAP_FREEZE,
 	BPF_BTF_GET_NEXT_ID,
+	BPF_MAP_LOOKUP_BATCH = 24,
+	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
+	BPF_MAP_UPDATE_BATCH = 26,
+	BPF_MAP_DELETE_BATCH = 27,
+	BPF_LINK_CREATE = 28,
+	BPF_LINK_UPDATE = 29,
+	BPF_LINK_GET_FD_BY_ID = 30,
+	BPF_LINK_GET_NEXT_ID = 31,
+	BPF_ENABLE_STATS = 32,
+	BPF_ITER_CREATE = 33,
+	BPF_LINK_DETACH = 34,
+	BPF_PROG_BIND_MAP = 35,
 };
 
 enum bpf_map_type {
@@ -374,6 +387,12 @@ struct bpf_stack_build_id {
 	};
 };
 
+/* BPF runtime statistics, used with BPF_ENABLE_STATS */
+enum bpf_stats_type {
+	/* available type members */
+	BPF_STATS_RUN_TIME = 0,
+};
+
 union bpf_attr {
 	struct { /* anonymous struct used by BPF_MAP_CREATE command */
 		__u32	map_type;	/* one of enum bpf_map_type */
@@ -504,6 +523,11 @@ union bpf_attr {
 		__u32		btf_log_size;
 		__u32		btf_log_level;
 	};
+
+	struct { /* anonymous struct used by BPF_ENABLE_STATS */
+		__u32		type;
+		__u32		pad;
+	} enable_stats;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
