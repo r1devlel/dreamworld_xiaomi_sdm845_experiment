@@ -136,6 +136,25 @@ jobs:
             echo "Native function entry patchpoint verified: $native_target begins with four NOPs."
           done
 
+      - name: Verify embedded vmlinux BTF
+        run: |
+          set -euxo pipefail
+          test -s out/vmlinux
+
+          # A green build does not prove that CONFIG_DEBUG_INFO_BTF produced a
+          # usable blob. The section and the boundary symbols are what
+          # sysfs_btf.c uses to serve /sys/kernel/btf/vmlinux.
+          llvm-readelf-18 -S out/vmlinux | grep -q '\.BTF'
+          llvm-nm-18 out/vmlinux | awk '{print $NF}' | grep -qx '__start_BTF'
+          llvm-nm-18 out/vmlinux | awk '{print $NF}' | grep -qx '__stop_BTF'
+
+          llvm-objcopy-18 --dump-section .BTF=out/vmlinux.btf out/vmlinux
+          btf_size=$(stat -c%s out/vmlinux.btf)
+          test "$btf_size" -gt 100000
+          magic=$(od -An -tx1 -N4 out/vmlinux.btf | tr -d ' \n')
+          test "$magic" = "9feb0100"
+          echo "Embedded vmlinux BTF verified: ${btf_size} bytes, magic ${magic}."
+
       - name: Diagnose BPF, RCU, and XDP build state
         if: always()
         run: |
@@ -219,4 +238,5 @@ jobs:
             out/arch/arm64/boot/Image.gz-dtb
             out/arch/arm64/boot/Image.gz
             out/native_bpf_trampoline_test.arm64
+            out/vmlinux.btf
             out/.config
