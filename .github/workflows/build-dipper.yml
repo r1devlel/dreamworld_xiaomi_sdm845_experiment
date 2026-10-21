@@ -162,6 +162,10 @@ jobs:
           magic=$(od -An -tx1 -N4 out/vmlinux.btf | tr -d ' \n')
           test "$magic" = "9feb0100"
 
+          # The in-kernel parser stops at BTF_KIND_DATASEC; newer pahole can
+          # emit FLOAT/ENUM64 that only fail later, on attach_btf_id.
+          python3 scripts/check-btf-kinds.py out/vmlinux.btf
+
           # sysfs_btf.c exposes [__start_BTF, __stop_BTF); those symbols must
           # describe the real section, not an empty placeholder resolved at
           # link time.
