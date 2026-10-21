@@ -193,8 +193,13 @@ gen_btf()
 		return 1
 	fi
 
-	if [ "${pahole_ver}" -ge "121" ]; then
-		extra_paholeopt="${extra_paholeopt} --btf_gen_floats"
+	# This tree's in-kernel BTF parser only knows kinds up to
+	# BTF_KIND_DATASEC (15). pahole 1.24+ emits BTF_KIND_ENUM64 by default
+	# and --btf_gen_floats adds BTF_KIND_FLOAT; btf_parse_vmlinux() rejects
+	# both while resolving attach_btf_id, which breaks fentry/fexit. Keep
+	# the generated blob within the kinds this kernel understands.
+	if [ "${pahole_ver}" -ge "124" ]; then
+		extra_paholeopt="${extra_paholeopt} --skip_encoding_btf_enum64"
 	fi
 
 	# Encode from the relocatable vmlinux.o: unlike the final ET_DYN
