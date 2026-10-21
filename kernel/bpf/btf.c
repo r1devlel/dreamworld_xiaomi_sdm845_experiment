@@ -2301,10 +2301,10 @@ static s32 btf_enum_check_meta(struct btf_verifier_env *env,
 		return -EINVAL;
 	}
 
-	if (btf_type_kflag(t)) {
-		btf_verifier_log_type(env, t, "Invalid btf_info kind_flag");
-		return -EINVAL;
-	}
+	/* kflag carries the signedness of a 32-bit enum; the payload is still
+	 * an array of s32 values, so it does not change the metadata layout.
+	 * Modern pahole sets it for enums with negative values.
+	 */
 
 	if (t->size > 8 || !is_power_of_2(t->size)) {
 		btf_verifier_log_type(env, t, "Unexpected size");
