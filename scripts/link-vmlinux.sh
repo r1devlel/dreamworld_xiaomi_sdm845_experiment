@@ -174,34 +174,67 @@ vmlinux_link()
 }
 
 # generate .BTF typeinfo from DWARF debuginfo
-# ${1} - temporary vmlinux image used to generate BTF
-# ${2} - relocatable object containing the generated .BTF section
+# ${1} - fallback vmlinux image if vmlinux.o is not available
+# ${2} - .o file with the .BTF section, linked into the final vmlinux
 gen_btf()
 {
 	local pahole_ver;
+	local extra_paholeopt="";
+	local btf_src="vmlinux.o";
 
 	if ! [ -x "$(command -v ${PAHOLE})" ]; then
-		info "BTF" "${1}: pahole (${PAHOLE}) is not available"
+		info "BTF" "${2}: pahole (${PAHOLE}) is not available"
 		return 1
 	fi
 
 	pahole_ver=$(${PAHOLE} --version | sed -E 's/v([0-9]+)\.([0-9]+)/\1\2/')
 	if [ "${pahole_ver}" -lt "113" ]; then
-		info "BTF" "${1}: pahole version $(${PAHOLE} --version) is too old, need at least v1.13"
+		info "BTF" "${2}: pahole version $(${PAHOLE} --version) is too old, need at least v1.13"
 		return 1
 	fi
 
+	if [ "${pahole_ver}" -ge "121" ]; then
+		extra_paholeopt="${extra_paholeopt} --btf_gen_floats"
+	fi
+
+	# Encode from the relocatable vmlinux.o: unlike the final ET_DYN
+	# vmlinux it has no linker-script .BTF placeholder, and pahole handles
+	# ET_REL reliably. Fall back to a throwaway vmlinux link on trees that
+	# do not build vmlinux.o.
+	if [ ! -f "${btf_src}" ]; then
+		btf_src="${1}"
+		vmlinux_link "" "${btf_src}" || return 1
+	fi
+
 	info "BTF" "${2}"
-	vmlinux_link "" "${1}" || return 1
-	LLVM_OBJCOPY=${OBJCOPY} ${PAHOLE} -J "${1}" || return 1
+	LLVM_OBJCOPY=${OBJCOPY} ${PAHOLE} -J ${extra_paholeopt} "${btf_src}" || return 1
+
+	# pahole can return success without emitting a section (observed with
+	# pahole 1.25 on an LLD-linked vmlinux). Do not silently ship a kernel
+	# with CONFIG_DEBUG_INFO_BTF but no BTF: verify, then fall back to a
+	# detached encoding if the section is missing or empty.
+	if ! ${OBJCOPY} --dump-section .BTF="${2}.btf" "${btf_src}" \
+			>/dev/null 2>&1 || ! [ -s "${2}.btf" ]; then
+		info "BTF" "${2}: regenerating detached"
+		${PAHOLE} --btf_encode_detached="${2}.btf" ${extra_paholeopt} \
+			"${btf_src}" || return 1
+		${OBJCOPY} --remove-section .BTF "${btf_src}" "${2}.nobtf" \
+			2>/dev/null || cp "${btf_src}" "${2}.nobtf" || return 1
+		${OBJCOPY} --add-section .BTF="${2}.btf" \
+			--set-section-flags .BTF=alloc,readonly \
+			"${2}.nobtf" "${2}.elf" || return 1
+		btf_src="${2}.elf"
+	fi
 
 	# Keep only .BTF as a relocatable, allocatable input section. The final
 	# vmlinux link will define __start_BTF and __stop_BTF around this data.
 	${OBJCOPY} --only-section=.BTF --set-section-flags .BTF=alloc,readonly \
-		--strip-all "${1}" "${2}" 2>/dev/null || return 1
-	# ET_EXEC cannot be linked as an input object by lld.
+		--strip-all "${btf_src}" "${2}" 2>/dev/null || return 1
+	# ET_EXEC/ET_DYN cannot be linked as an input object by lld.
 	printf '\1' | dd of="${2}" conv=notrunc bs=1 seek=16 status=none || return 1
+	rm -f "${2}.btf" "${2}.elf" "${2}.nobtf"
 }
+
 # Create ${2} .o file with all symbols from the ${1} object file
 kallsyms()
 {
