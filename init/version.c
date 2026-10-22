@@ -14,11 +14,11 @@
 #include <linux/version.h>
 #include <linux/proc_ns.h>
 
-/* Android userspace expects a modern UTS release for compatibility.
- * Only the displayed uname/banner string is changed; the kernel ABI,
- * module vermagic and internal LINUX_VERSION_CODE remain 4.9.337.
+/* Keep the real 4.9.337 release visible; only add a custom display suffix.
+ * Kernel ABI, module vermagic and LINUX_VERSION_CODE remain unchanged.
+ * A fake 5.15 UTS release broke Android networking on this device.
  */
-#define UTS_RELEASE_DISPLAY "5.15.211-K_Edotensei-r1devlel"
+#define UTS_RELEASE_DISPLAY "4.9.337-K_Edotensei-r1devlel"
 
 #ifndef CONFIG_KALLSYMS
 #define version(a) Version_ ## a
