@@ -6884,8 +6884,16 @@ static int check_return_code(struct bpf_verifier_env *env)
 
 	switch (env->prog->type) {
 	case BPF_PROG_TYPE_CGROUP_SKB:
+		if (env->prog->expected_attach_type == BPF_CGROUP_INET_EGRESS)
+			range = tnum_range(0, 3);
+		break;
 	case BPF_PROG_TYPE_CGROUP_SOCK:
 	case BPF_PROG_TYPE_CGROUP_SOCK_ADDR:
+		if (env->prog->type == BPF_PROG_TYPE_CGROUP_SOCK_ADDR &&
+		    (env->prog->expected_attach_type == BPF_CGROUP_INET4_BIND ||
+		     env->prog->expected_attach_type == BPF_CGROUP_INET6_BIND))
+			range = tnum_range(0, 3);
+		break;
 	case BPF_PROG_TYPE_SOCK_OPS:
 	case BPF_PROG_TYPE_CGROUP_DEVICE:
 	case BPF_PROG_TYPE_CGROUP_SYSCTL:
