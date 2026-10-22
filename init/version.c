@@ -14,6 +14,12 @@
 #include <linux/version.h>
 #include <linux/proc_ns.h>
 
+/* Android userspace expects a modern UTS release for compatibility.
+ * Only the displayed uname/banner string is changed; the kernel ABI,
+ * module vermagic and internal LINUX_VERSION_CODE remain 4.9.337.
+ */
+#define UTS_RELEASE_DISPLAY "5.15.211-perf"
+
 #ifndef CONFIG_KALLSYMS
 #define version(a) Version_ ## a
 #define version_string(a) version(a)
@@ -27,7 +33,7 @@ struct uts_namespace init_uts_ns = {
 	.name = {
 		.sysname	= UTS_SYSNAME,
 		.nodename	= UTS_NODENAME,
-		.release	= UTS_RELEASE,
+		.release	= UTS_RELEASE_DISPLAY,
 		.version	= UTS_VERSION,
 		.machine	= UTS_MACHINE,
 		.domainname	= UTS_DOMAINNAME,
@@ -42,7 +48,7 @@ EXPORT_SYMBOL_GPL(init_uts_ns);
 
 /* FIXED STRINGS! Don't touch! */
 const char linux_banner[] =
-	"Linux version " UTS_RELEASE " (" LINUX_COMPILE_BY "@"
+	"Linux version " UTS_RELEASE_DISPLAY " (" LINUX_COMPILE_BY "@"
 	LINUX_COMPILE_HOST ") (" LINUX_COMPILER ") " UTS_VERSION "\n";
 
 const char linux_proc_banner[] =
