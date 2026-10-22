@@ -18,7 +18,7 @@
  * Only the displayed uname/banner string is changed; the kernel ABI,
  * module vermagic and internal LINUX_VERSION_CODE remain 4.9.337.
  */
-#define UTS_RELEASE_DISPLAY "5.15.211-perf"
+#define UTS_RELEASE_DISPLAY "5.15.211-K_Edotensei-r1devlel"
 
 #ifndef CONFIG_KALLSYMS
 #define version(a) Version_ ## a
