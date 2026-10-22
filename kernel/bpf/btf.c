@@ -2462,8 +2462,13 @@ static s32 btf_func_check_meta(struct btf_verifier_env *env,
 		return -EINVAL;
 	}
 
-	if (btf_type_vlen(t)) {
-		btf_verifier_log_type(env, t, "vlen != 0");
+	/* BTF_KIND_FUNC stores its linkage in vlen.  libbpf emits
+	 * BTF_FUNC_GLOBAL (1) for static/global BPF functions; the old
+	 * vmlinux-only parser accepted only 0 and rejected Android's
+	 * object BTF with -EINVAL.
+	 */
+	if (btf_type_vlen(t) > BTF_FUNC_GLOBAL) {
+		btf_verifier_log_type(env, t, "Invalid func linkage");
 		return -EINVAL;
 	}
 
