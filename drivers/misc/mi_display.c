@@ -69,6 +69,10 @@ static long mi_display_ioctl(struct file *file, unsigned int cmd,
 	case MI_DISPLAY_MSG_AOD:
 		WRITE_ONCE(mi_display_aod_enabled, !!req.value);
 		pr_info("mi_display: AOD notification %u\n", req.value);
+		if (req.value)
+			dsi_display_enter_aod();
+		else
+			dsi_display_exit_aod();
 		break;
 	case MI_DISPLAY_MSG_EARLY:
 		/* Optional screen-on/off latency hint. */

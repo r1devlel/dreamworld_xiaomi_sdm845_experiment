@@ -47,6 +47,96 @@ struct drm_notify_data g_notify_data;
 
 int panel_disp_param_send(struct dsi_display *display, int cmd);
 
+/*
+ * HyperOS sends the AOD notification only after the normal screen-off
+ * sequence has started.  The framework then powers the display back on to
+ * compose the AOD layer, but without a doze transition the panel remains in
+ * its normal video mode with a near-zero backlight.  Enter LP1/HBM whenever
+ * the AOD flag is active and the primary panel is actually on.
+ */
+static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
+{
+	struct drm_device *dev;
+	struct dsi_panel *panel;
+	u32 bl_lvl;
+
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return;
+	if (!c_bridge->display->is_prim_display)
+		return;
+	if (!mi_display_is_aod_enabled())
+		return;
+
+	panel = c_bridge->display->panel;
+	dev = c_bridge->base.dev;
+	if (!dev || !panel->panel_initialized)
+		return;
+
+	if (!atomic_read(&prim_panel_is_on)) {
+		pr_info("%s AOD deferred until panel on\n", __func__);
+		return;
+	}
+
+	if (dev->doze_state == DRM_BLANK_LP1 && panel->doze_enabled)
+		return;
+
+	dev->doze_state = DRM_BLANK_LP1;
+	dev->pre_state = SDE_MODE_DPMS_LP1;
+
+	dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+	dsi_panel_set_lp1(panel);
+
+	bl_lvl = panel->bl_config.bl_doze_hbm;
+	if (!bl_lvl)
+		bl_lvl = panel->bl_config.bl_doze_lpm;
+	if (!bl_lvl)
+		bl_lvl = 133;
+	dsi_panel_set_backlight(panel, bl_lvl);
+
+	pr_info("%s AOD entered, doze=%d panel_doze=%d bl=%u\n", __func__,
+		dev->doze_state, panel->doze_enabled, bl_lvl);
+}
+
+void dsi_display_enter_aod(void)
+{
+	dsi_bridge_enter_aod(gbridge);
+}
+EXPORT_SYMBOL_GPL(dsi_display_enter_aod);
+
+void dsi_display_exit_aod(void)
+{
+	struct dsi_bridge *c_bridge = gbridge;
+	struct dsi_panel *panel;
+	struct drm_device *dev;
+
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return;
+	if (!c_bridge->display->is_prim_display)
+		return;
+
+	panel = c_bridge->display->panel;
+	dev = c_bridge->base.dev;
+	if (!dev)
+		return;
+
+	if (dev->doze_state != DRM_BLANK_LP1 &&
+			dev->doze_state != DRM_BLANK_LP2 &&
+			!panel->doze_enabled)
+		return;
+
+	if (atomic_read(&prim_panel_is_on) && panel->panel_initialized)
+		dsi_panel_set_nolp(panel);
+
+	if (dev->doze_state == DRM_BLANK_LP1 ||
+			dev->doze_state == DRM_BLANK_LP2)
+		dev->doze_state = DRM_BLANK_UNBLANK;
+	dev->pre_state = SDE_MODE_DPMS_ON;
+
+	pr_info("%s AOD exited, doze=%d panel_doze=%d\n", __func__,
+		dev->doze_state, panel->doze_enabled);
+}
+EXPORT_SYMBOL_GPL(dsi_display_exit_aod);
+
 /**
  *	drm_register_client - register a client notifier
  *	@nb: notifier block to callback on events
@@ -196,6 +286,10 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	struct sde_connector *c_conn = to_sde_connector(c_bridge->display->drm_conn);
 	int event = 0;
 
+	pr_info("%s begin doze=%d prim_on=%d aod=%d\n", __func__,
+		dev->doze_state, atomic_read(&prim_panel_is_on),
+		mi_display_is_aod_enabled());
+
 	if (dev->doze_state == DRM_BLANK_POWERDOWN) {
 		dev->doze_state = DRM_BLANK_UNBLANK;
 		pr_info("%s power on from power off\n", __func__);
@@ -229,10 +323,20 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 			c_bridge->display->is_prim_display &&
 			(dev->doze_state == DRM_BLANK_LP1 ||
 			 dev->doze_state == DRM_BLANK_LP2)) {
-		if (c_bridge->display->panel->panel_initialized)
-			dsi_panel_set_nolp(c_bridge->display->panel);
-		dev->doze_state = DRM_BLANK_UNBLANK;
-		dev->pre_state = SDE_MODE_DPMS_ON;
+		if (mi_display_is_aod_enabled()) {
+			/*
+			 * While AOD is active this pre-enable is the display
+			 * power-up for the doze layer, not a user wake-up.
+			 * Keep LP1 and let the AOD notification 0 callback exit
+			 * doze when the user actually wakes the device.
+			 */
+			pr_info("%s keep AOD doze\n", __func__);
+		} else {
+			if (c_bridge->display->panel->panel_initialized)
+				dsi_panel_set_nolp(c_bridge->display->panel);
+			dev->doze_state = DRM_BLANK_UNBLANK;
+			dev->pre_state = SDE_MODE_DPMS_ON;
+		}
 	}
 
 	if (c_bridge->display->is_prim_display && atomic_read(&prim_panel_is_on)) {
@@ -436,6 +540,10 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 		return;
 	}
 
+	pr_info("%s begin doze=%d prim_on=%d aod=%d\n", __func__,
+		bridge->dev->doze_state, atomic_read(&prim_panel_is_on),
+		mi_display_is_aod_enabled());
+
 	if (c_bridge->dsi_mode.dsi_mode_flags &
 			(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
 			 DSI_MODE_FLAG_DYN_CLK)) {
@@ -451,6 +559,14 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 
 	if (display && display->drm_conn)
 		sde_connector_helper_bridge_enable(display->drm_conn);
+
+	/*
+	 * AOD is normally powered on as a regular display enable after the
+	 * notification has arrived.  Post-enable has completed at this point,
+	 * so switching the panel into LP1/HBM will not be undone by the normal
+	 * panel-on command sequence.
+	 */
+	dsi_bridge_enter_aod(c_bridge);
 }
 
 static void dsi_bridge_disable(struct drm_bridge *bridge)
@@ -483,6 +599,11 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 	struct dsi_panel *panel = c_bridge->display->panel;
 	int event = 0;
 	u32 bl_lvl;
+
+	pr_info("%s begin doze=%d prim_on=%d aod=%d init=%d\n", __func__,
+		dev->doze_state, atomic_read(&prim_panel_is_on),
+		mi_display_is_aod_enabled(),
+		panel ? panel->panel_initialized : 0);
 
 	/*
 	 * MIUI SurfaceFlinger tells the kernel when an AOD layer is present.

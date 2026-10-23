@@ -21,6 +21,7 @@
 #include <linux/of_gpio.h>
 #include <linux/err.h>
 #include <linux/kernfs.h>
+#include <linux/mi_display.h>
 #include <drm/drm_notifier.h>
 
 #include "msm_drv.h"
@@ -161,6 +162,7 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	struct dsi_panel *panel;
 	struct drm_device *drm_dev;
 	u32 bl_scale, bl_scale_ad;
+	u32 requested_bl;
 	u64 bl_temp;
 	int rc = 0;
 
@@ -169,6 +171,20 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 
 	panel = dsi_display->panel;
 	drm_dev = dsi_display->drm_dev;
+	requested_bl = bl_lvl;
+
+	/*
+	 * The framework requests a very low UI brightness when it powers the
+	 * panel up for AOD.  A doze transition may not have happened yet if the
+	 * display enable path did not observe the notification, so make this
+	 * brightness update enter AOD before applying the backlight.
+	 */
+	if (mi_display_is_aod_enabled() && dsi_display->is_prim_display &&
+			panel->panel_initialized && !panel->doze_enabled &&
+			bl_lvl) {
+		pr_info("%s enter AOD on backlight update\n", __func__);
+		dsi_display_enter_aod();
+	}
 
 	mutex_lock(&panel->panel_lock);
 	if (!dsi_panel_initialized(panel)) {
@@ -176,7 +192,20 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 		goto error;
 	}
 
-	panel->bl_config.bl_level = bl_lvl;
+	panel->bl_config.bl_level = requested_bl;
+
+	if (panel->doze_enabled) {
+		if (panel->doze_mode == DSI_DOZE_HBM)
+			bl_lvl = panel->bl_config.bl_doze_hbm;
+		else if (panel->doze_mode == DSI_DOZE_LPM)
+			bl_lvl = panel->bl_config.bl_doze_lpm;
+
+		if (!bl_lvl)
+			bl_lvl = 133;
+
+		pr_info("%s AOD backlight %u -> %u\n", __func__,
+			requested_bl, bl_lvl);
+	}
 
 	/* scale backlight */
 	bl_scale = panel->bl_config.bl_scale;
@@ -1212,6 +1241,18 @@ int dsi_display_set_power(struct drm_connector *connector,
 		if (dev->pre_state != SDE_MODE_DPMS_LP1 &&
 					dev->pre_state != SDE_MODE_DPMS_LP2)
 			break;
+		/*
+		 * The display stack powers the panel back on for AOD after the
+		 * AOD notification has been received.  That power-on request
+		 * must not clear LP1; the notification 0 callback does that when
+		 * the user wakes the device.
+		 */
+		if (mi_display_is_aod_enabled() &&
+				(dev->doze_state == DRM_BLANK_LP1 ||
+				 dev->doze_state == DRM_BLANK_LP2)) {
+			pr_info("%s keep AOD doze\n", __func__);
+			break;
+		}
 		drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 		rc = dsi_panel_set_nolp(display->panel);
 		if (dev->doze_state == DRM_BLANK_LP1 ||
