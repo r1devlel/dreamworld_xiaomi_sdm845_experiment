@@ -120,6 +120,9 @@ do { \
 #define INPUT_EVENT_PALM_ON		13
 #define INPUT_EVENT_END				13
 
+/* Discard the taps that belong to a double-tap wake gesture. */
+#define FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS	700
+
 extern SysInfo systemInfo;
 extern TestToDo tests;
 #ifdef GESTURE_MODE
@@ -2600,6 +2603,13 @@ void fts_input_report_key(struct fts_ts_info *info, int key_code)
 	mutex_unlock(&info->input_report_mutex);
 }
 
+static bool fts_is_gesture_wake_touch_suppressed(struct fts_ts_info *info)
+{
+	return info->gesture_wake_jiffies &&
+	       time_before(jiffies, info->gesture_wake_jiffies +
+			   msecs_to_jiffies(FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS));
+}
+
 /**
 * Event Handler for no events (EVT_ID_NOEVENT)
 */
@@ -2648,6 +2658,9 @@ static void fts_enter_pointer_event_handler(struct fts_ts_info *info,
 	unsigned int touch_condition = 1, tool = MT_TOOL_FINGER;
 	int x, y, z, distance;
 	u8 touchType;
+
+	if (fts_is_gesture_wake_touch_suppressed(info))
+		return;
 
 #ifndef CONFIG_INPUT_PRESS_NDT
 	if (!info->resume_bit)
@@ -2755,6 +2768,9 @@ static void fts_leave_pointer_event_handler(struct fts_ts_info *info,
 #ifdef CONFIG_INPUT_PRESS_NDT
 	int x, y;
 #endif
+
+	if (fts_is_gesture_wake_touch_suppressed(info))
+		return;
 
 	touchType = event[1] & 0x0F;
 	touchId = (event[1] & 0xF0) >> 4;
@@ -3153,6 +3169,7 @@ static void fts_gesture_event_handler(struct fts_ts_info *info,
 				goto gesture_done;
 			value = KEY_WAKEUP;
 			pr_info("%s: double tap !\n", __func__);
+			info->gesture_wake_jiffies = jiffies;
 			needCoords = 0;
 			break;
 
@@ -4041,6 +4058,7 @@ static void fts_suspend_work(struct work_struct *work)
 #endif
 
 	info->resume_bit = 0;
+	info->gesture_wake_jiffies = 0;
 	fts_mode_handler(info, 0);
 
 	release_all_touches(info);

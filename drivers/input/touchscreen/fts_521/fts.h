@@ -310,6 +310,7 @@ struct fts_ts_info {
 	struct mutex input_report_mutex;
 	struct mutex cmd_update_mutex;
 	int gesture_enabled;
+	unsigned long gesture_wake_jiffies;
 	int glove_enabled;
 	int charger_enabled;
 	int stylus_enabled;
