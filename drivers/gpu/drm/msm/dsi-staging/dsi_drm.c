@@ -50,7 +50,7 @@ static struct wakeup_source prim_panel_wakelock;
  */
 static struct delayed_work aod_grace_work;
 static atomic_t aod_grace_active;
-#define AOD_GRACE_MS 1500
+#define AOD_GRACE_MS 3000
 
 struct drm_notify_data g_notify_data;
 
@@ -70,6 +70,20 @@ static void dsi_display_cancel_aod_grace(bool relax)
 		if (relax)
 			__pm_relax(&prim_panel_wakelock);
 	}
+}
+
+/*
+ * FTS only enters gesture mode on DRM_BLANK_POWERDOWN.  Keep the touch
+ * controller there for the whole AOD period; a normal UNBLANK during AOD
+ * composition would resume normal scanning and break double-tap-to-wake.
+ */
+static void dsi_display_aod_touch_suspend(void)
+{
+	int event = DRM_BLANK_POWERDOWN;
+
+	g_notify_data.data = &event;
+	drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
+	drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 }
 
 /*
@@ -110,6 +124,7 @@ static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
 		bl_lvl = 133;
 
 	dsi_display_cancel_aod_grace(true);
+	dsi_display_aod_touch_suspend();
 
 	if (dev->doze_state == DRM_BLANK_LP1 && panel->doze_enabled) {
 		dsi_panel_set_backlight(panel, bl_lvl);
@@ -140,6 +155,7 @@ void dsi_display_exit_aod(void)
 	struct dsi_bridge *c_bridge = gbridge;
 	struct dsi_panel *panel;
 	struct drm_device *dev;
+	int event = DRM_BLANK_UNBLANK;
 
 	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
 		return;
@@ -158,13 +174,22 @@ void dsi_display_exit_aod(void)
 			!panel->doze_enabled)
 		return;
 
+	/*
+	 * AOD keeps FTS in gesture mode.  Resume it when the AOD layer is
+	 * removed so normal touch works after a double-tap wake.  FTS ignores
+	 * UNBLANK when it is not suspended, so this is safe if the display
+	 * stack already handled the screen-on path.
+	 */
+	g_notify_data.data = &event;
+	drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
+
 	if (atomic_read(&prim_panel_is_on) && panel->panel_initialized)
 		dsi_panel_set_nolp(panel);
 
-	if (dev->doze_state == DRM_BLANK_LP1 ||
-			dev->doze_state == DRM_BLANK_LP2)
-		dev->doze_state = DRM_BLANK_UNBLANK;
+	dev->doze_state = DRM_BLANK_UNBLANK;
 	dev->pre_state = SDE_MODE_DPMS_ON;
+
+	drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 
 	pr_info("%s AOD exited, doze=%d panel_doze=%d\n", __func__,
 		dev->doze_state, panel->doze_enabled);
@@ -387,7 +412,13 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 
 	if (c_bridge->display->is_prim_display && atomic_read(&prim_panel_is_on)) {
 		cancel_delayed_work_sync(&prim_panel_work);
-		__pm_relax(&prim_panel_wakelock);
+		/*
+		 * The grace work owns this wakeup source until it is
+		 * cancelled or expires.  Relaxing it here would let the
+		 * system suspend while the panel is still held in LP1.
+		 */
+		if (!atomic_read(&aod_grace_active))
+			__pm_relax(&prim_panel_wakelock);
 		if (dev->fp_quickon &&
 			(dev->doze_state == DRM_BLANK_LP1 || dev->doze_state == DRM_BLANK_LP2)) {
 			event = DRM_BLANK_POWERDOWN;
@@ -600,15 +631,16 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 	display = c_bridge->display;
 
 	/*
-	 * The panel is already prepared and held in LP1 for AOD.  Running
-	 * post-enable here would send the normal panel-on sequence and undo
-	 * the doze state, which is the visible flash on AOD entry.
+	 * The panel is already prepared and held in LP1 for AOD or for the
+	 * screen-off grace hold.  Running post-enable here would send the
+	 * normal panel-on sequence, flash the screen, and resume the touch
+	 * controller before the AOD layer is ready.
 	 */
 	if (display->is_prim_display && atomic_read(&prim_panel_is_on) &&
 			(atomic_read(&aod_grace_active) ||
-			 mi_display_is_aod_enabled()) &&
-			(dev->doze_state == DRM_BLANK_LP1 ||
-			 dev->doze_state == DRM_BLANK_LP2)) {
+			 (mi_display_is_aod_enabled() &&
+			  (dev->doze_state == DRM_BLANK_LP1 ||
+			   dev->doze_state == DRM_BLANK_LP2)))) {
 		pr_info("%s keep AOD doze, skip post_enable\n", __func__);
 		dsi_bridge_enter_aod(c_bridge);
 		return;

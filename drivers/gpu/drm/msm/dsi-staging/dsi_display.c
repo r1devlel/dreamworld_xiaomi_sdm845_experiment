@@ -1252,6 +1252,22 @@ int dsi_display_set_power(struct drm_connector *connector,
 					dev->pre_state != SDE_MODE_DPMS_LP2)
 			break;
 		/*
+		 * The framework powers the panel back on to compose the AOD
+		 * layer before SurfaceFlinger sends the AOD notification.
+		 * Keep LP1 and do not send UNBLANK yet: a normal panel-on
+		 * would flash the screen, and the FTS touch controller would
+		 * leave gesture mode, breaking double-tap-to-wake in AOD.
+		 * Notification 1 applies the doze backlight, notification 0
+		 * or the grace timer finishes the transition.
+		 */
+		if (dsi_display_aod_grace_active() &&
+				display->is_prim_display) {
+			pr_info("%s keep AOD grace doze\n", __func__);
+			dev->doze_state = DRM_BLANK_LP1;
+			dev->pre_state = SDE_MODE_DPMS_LP1;
+			return rc;
+		}
+		/*
 		 * The display stack powers the panel back on for AOD after the
 		 * AOD notification has been received.  That power-on request
 		 * must not clear LP1; the notification 0 callback does that when
