@@ -1214,6 +1214,9 @@ int dsi_display_set_power(struct drm_connector *connector,
 			break;
 		drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 		rc = dsi_panel_set_nolp(display->panel);
+		if (dev->doze_state == DRM_BLANK_LP1 ||
+				dev->doze_state == DRM_BLANK_LP2)
+			dev->doze_state = DRM_BLANK_UNBLANK;
 		drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 		break;
 	}
