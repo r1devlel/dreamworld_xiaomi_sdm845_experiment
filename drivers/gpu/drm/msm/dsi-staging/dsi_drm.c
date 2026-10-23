@@ -21,6 +21,7 @@
 #include <linux/notifier.h>
 #include <drm/drm_bridge.h>
 #include <linux/pm_wakeup.h>
+#include <linux/mi_display.h>
 #include <soc/qcom/socinfo.h>
 
 #include "msm_kms.h"
@@ -462,7 +463,33 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 	int rc = 0;
 	struct dsi_bridge *c_bridge = to_dsi_bridge(bridge);
 	struct drm_device *dev = bridge->dev;
+	struct dsi_panel *panel = c_bridge->display->panel;
 	int event = 0;
+	u32 bl_lvl;
+
+	/*
+	 * MIUI SurfaceFlinger tells the kernel when an AOD layer is present.
+	 * Without that notification the generic DRM path powers the panel off
+	 * instead of entering the LP1 doze state, so the AOD only stays visible
+	 * during the screen-off transition. Keep the primary panel in LP1 when
+	 * the notification is active and apply the doze backlight.
+	 */
+	if (c_bridge->display->is_prim_display &&
+			mi_display_is_aod_enabled() &&
+			panel && panel->panel_initialized) {
+		dev->doze_state = DRM_BLANK_LP1;
+		dev->pre_state = SDE_MODE_DPMS_LP1;
+
+		dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+		dsi_panel_set_lp1(panel);
+
+		bl_lvl = panel->bl_config.bl_doze_hbm;
+		if (!bl_lvl)
+			bl_lvl = panel->bl_config.bl_doze_lpm;
+		if (!bl_lvl)
+			bl_lvl = 133;
+		dsi_panel_set_backlight(panel, bl_lvl);
+	}
 
 	if (dev->doze_state == DRM_BLANK_UNBLANK) {
 		dev->doze_state = DRM_BLANK_POWERDOWN;
