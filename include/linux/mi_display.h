@@ -6,5 +6,6 @@
 bool mi_display_is_aod_enabled(void);
 void dsi_display_enter_aod(void);
 void dsi_display_exit_aod(void);
+bool dsi_display_aod_grace_active(void);
 
 #endif /* _LINUX_MI_DISPLAY_H */

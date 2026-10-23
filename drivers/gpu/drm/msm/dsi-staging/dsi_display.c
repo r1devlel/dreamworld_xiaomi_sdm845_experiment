@@ -195,16 +195,26 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	panel->bl_config.bl_level = requested_bl;
 
 	if (panel->doze_enabled) {
-		if (panel->doze_mode == DSI_DOZE_HBM)
-			bl_lvl = panel->bl_config.bl_doze_hbm;
-		else if (panel->doze_mode == DSI_DOZE_LPM)
-			bl_lvl = panel->bl_config.bl_doze_lpm;
+		if (dsi_display_aod_grace_active() &&
+				!mi_display_is_aod_enabled()) {
+			/*
+			 * The panel is held in LP1 while waiting for the AOD
+			 * layer.  Keep it black until notification 1 arrives.
+			 */
+			bl_lvl = 0;
+			pr_info("%s AOD grace backlight suppressed\n", __func__);
+		} else {
+			if (panel->doze_mode == DSI_DOZE_HBM)
+				bl_lvl = panel->bl_config.bl_doze_hbm;
+			else if (panel->doze_mode == DSI_DOZE_LPM)
+				bl_lvl = panel->bl_config.bl_doze_lpm;
 
-		if (!bl_lvl)
-			bl_lvl = 133;
+			if (!bl_lvl)
+				bl_lvl = 133;
 
-		pr_info("%s AOD backlight %u -> %u\n", __func__,
-			requested_bl, bl_lvl);
+			pr_info("%s AOD backlight %u -> %u\n", __func__,
+				requested_bl, bl_lvl);
+		}
 	}
 
 	/* scale backlight */

@@ -43,9 +43,34 @@ static struct delayed_work prim_panel_work;
 static atomic_t prim_panel_is_on;
 static struct wakeup_source prim_panel_wakelock;
 
+/*
+ * HyperOS can announce AOD after the normal screen-off sequence has already
+ * powered the panel down.  Keep the primary panel in LP1 for a short grace
+ * period so the AOD layer can arrive without a full panel power cycle.
+ */
+static struct delayed_work aod_grace_work;
+static atomic_t aod_grace_active;
+#define AOD_GRACE_MS 1500
+
 struct drm_notify_data g_notify_data;
 
 int panel_disp_param_send(struct dsi_display *display, int cmd);
+
+static void dsi_bridge_aod_grace_work(struct work_struct *work);
+
+bool dsi_display_aod_grace_active(void)
+{
+	return atomic_read(&aod_grace_active);
+}
+
+static void dsi_display_cancel_aod_grace(bool relax)
+{
+	if (atomic_xchg(&aod_grace_active, 0)) {
+		cancel_delayed_work_sync(&aod_grace_work);
+		if (relax)
+			__pm_relax(&prim_panel_wakelock);
+	}
+}
 
 /*
  * HyperOS sends the AOD notification only after the normal screen-off
@@ -73,24 +98,31 @@ static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
 		return;
 
 	if (!atomic_read(&prim_panel_is_on)) {
+		dsi_display_cancel_aod_grace(true);
 		pr_info("%s AOD deferred until panel on\n", __func__);
 		return;
 	}
-
-	if (dev->doze_state == DRM_BLANK_LP1 && panel->doze_enabled)
-		return;
-
-	dev->doze_state = DRM_BLANK_LP1;
-	dev->pre_state = SDE_MODE_DPMS_LP1;
-
-	dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
-	dsi_panel_set_lp1(panel);
 
 	bl_lvl = panel->bl_config.bl_doze_hbm;
 	if (!bl_lvl)
 		bl_lvl = panel->bl_config.bl_doze_lpm;
 	if (!bl_lvl)
 		bl_lvl = 133;
+
+	dsi_display_cancel_aod_grace(true);
+
+	if (dev->doze_state == DRM_BLANK_LP1 && panel->doze_enabled) {
+		dsi_panel_set_backlight(panel, bl_lvl);
+		pr_info("%s AOD backlight refreshed, doze=%d bl=%u\n", __func__,
+			dev->doze_state, bl_lvl);
+		return;
+	}
+
+	dev->doze_state = DRM_BLANK_LP1;
+	dev->pre_state = SDE_MODE_DPMS_LP1;
+
+	dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+	dsi_panel_set_lp1(panel);
 	dsi_panel_set_backlight(panel, bl_lvl);
 
 	pr_info("%s AOD entered, doze=%d panel_doze=%d bl=%u\n", __func__,
@@ -118,6 +150,8 @@ void dsi_display_exit_aod(void)
 	dev = c_bridge->base.dev;
 	if (!dev)
 		return;
+
+	dsi_display_cancel_aod_grace(true);
 
 	if (dev->doze_state != DRM_BLANK_LP1 &&
 			dev->doze_state != DRM_BLANK_LP2 &&
@@ -320,6 +354,18 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	 * panel powerdown.  Exit doze here and let the normal enable path run.
 	 */
 	if (c_bridge->display && c_bridge->display->panel &&
+			c_bridge->display->is_prim_display &&
+			atomic_read(&aod_grace_active) &&
+			(dev->doze_state == DRM_BLANK_LP1 ||
+			 dev->doze_state == DRM_BLANK_LP2)) {
+		/*
+		 * The framework powers the display for the AOD layer while
+		 * the panel is still in our LP1 grace hold.  Do not run the
+		 * normal panel-on path here; notification 1 will apply the
+		 * doze backlight, or the grace timer will power the panel off.
+		 */
+		pr_info("%s keep AOD grace doze\n", __func__);
+	} else if (c_bridge->display && c_bridge->display->panel &&
 			c_bridge->display->is_prim_display &&
 			(dev->doze_state == DRM_BLANK_LP1 ||
 			 dev->doze_state == DRM_BLANK_LP2)) {
@@ -534,15 +580,16 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 	int rc = 0;
 	struct dsi_bridge *c_bridge = to_dsi_bridge(bridge);
 	struct dsi_display *display;
+	struct drm_device *dev = bridge->dev;
 
 	if (!bridge) {
 		pr_err("Invalid params\n");
 		return;
 	}
 
-	pr_info("%s begin doze=%d prim_on=%d aod=%d\n", __func__,
+	pr_info("%s begin doze=%d prim_on=%d aod=%d grace=%d\n", __func__,
 		bridge->dev->doze_state, atomic_read(&prim_panel_is_on),
-		mi_display_is_aod_enabled());
+		mi_display_is_aod_enabled(), atomic_read(&aod_grace_active));
 
 	if (c_bridge->dsi_mode.dsi_mode_flags &
 			(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
@@ -551,6 +598,21 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 		return;
 	}
 	display = c_bridge->display;
+
+	/*
+	 * The panel is already prepared and held in LP1 for AOD.  Running
+	 * post-enable here would send the normal panel-on sequence and undo
+	 * the doze state, which is the visible flash on AOD entry.
+	 */
+	if (display->is_prim_display && atomic_read(&prim_panel_is_on) &&
+			(atomic_read(&aod_grace_active) ||
+			 mi_display_is_aod_enabled()) &&
+			(dev->doze_state == DRM_BLANK_LP1 ||
+			 dev->doze_state == DRM_BLANK_LP2)) {
+		pr_info("%s keep AOD doze, skip post_enable\n", __func__);
+		dsi_bridge_enter_aod(c_bridge);
+		return;
+	}
 
 	rc = dsi_display_post_enable(display);
 	if (rc)
@@ -612,21 +674,40 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 	 * during the screen-off transition. Keep the primary panel in LP1 when
 	 * the notification is active and apply the doze backlight.
 	 */
-	if (c_bridge->display->is_prim_display &&
-			mi_display_is_aod_enabled() &&
-			panel && panel->panel_initialized) {
-		dev->doze_state = DRM_BLANK_LP1;
-		dev->pre_state = SDE_MODE_DPMS_LP1;
+	if (c_bridge->display->is_prim_display && panel &&
+			panel->panel_initialized &&
+			atomic_read(&prim_panel_is_on)) {
+		if (mi_display_is_aod_enabled()) {
+			dev->doze_state = DRM_BLANK_LP1;
+			dev->pre_state = SDE_MODE_DPMS_LP1;
 
-		dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
-		dsi_panel_set_lp1(panel);
+			dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+			dsi_panel_set_lp1(panel);
 
-		bl_lvl = panel->bl_config.bl_doze_hbm;
-		if (!bl_lvl)
-			bl_lvl = panel->bl_config.bl_doze_lpm;
-		if (!bl_lvl)
-			bl_lvl = 133;
-		dsi_panel_set_backlight(panel, bl_lvl);
+			bl_lvl = panel->bl_config.bl_doze_hbm;
+			if (!bl_lvl)
+				bl_lvl = panel->bl_config.bl_doze_lpm;
+			if (!bl_lvl)
+				bl_lvl = 133;
+			dsi_panel_set_backlight(panel, bl_lvl);
+		} else {
+			dev->doze_state = DRM_BLANK_LP1;
+			dev->pre_state = SDE_MODE_DPMS_LP1;
+
+			if (!atomic_read(&aod_grace_active)) {
+				__pm_stay_awake(&prim_panel_wakelock);
+				atomic_set(&aod_grace_active, 1);
+			}
+
+			dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
+			dsi_panel_set_lp1(panel);
+			dsi_panel_set_backlight(panel, 0);
+
+			cancel_delayed_work(&aod_grace_work);
+			schedule_delayed_work(&aod_grace_work,
+					msecs_to_jiffies(AOD_GRACE_MS));
+			pr_info("%s AOD grace hold\n", __func__);
+		}
 	}
 
 	if (dev->doze_state == DRM_BLANK_UNBLANK) {
@@ -685,6 +766,52 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 
 	if (c_bridge->display->is_prim_display)
 		atomic_set(&prim_panel_is_on, false);
+}
+
+static void dsi_bridge_aod_grace_work(struct work_struct *work)
+{
+	struct dsi_bridge *c_bridge = gbridge;
+	struct dsi_display *display;
+	struct drm_device *dev;
+	int rc;
+
+	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
+		return;
+
+	mutex_lock(&c_bridge->base.lock);
+
+	if (!atomic_read(&aod_grace_active)) {
+		mutex_unlock(&c_bridge->base.lock);
+		return;
+	}
+
+	if (mi_display_is_aod_enabled()) {
+		atomic_set(&aod_grace_active, 0);
+		__pm_relax(&prim_panel_wakelock);
+		mutex_unlock(&c_bridge->base.lock);
+		return;
+	}
+
+	display = c_bridge->display;
+	dev = c_bridge->base.dev;
+	atomic_set(&aod_grace_active, 0);
+
+	pr_info("AOD grace expired, powering panel off\n");
+
+	dev->doze_state = DRM_BLANK_POWERDOWN;
+	dev->pre_state = SDE_MODE_DPMS_OFF;
+
+	rc = dsi_display_disable(display);
+	if (!rc)
+		rc = dsi_display_unprepare(display);
+	if (rc)
+		pr_err("AOD grace panel off failed, rc=%d\n", rc);
+
+	atomic_set(&prim_panel_is_on, false);
+	dev->fp_quickon = false;
+	__pm_relax(&prim_panel_wakelock);
+
+	mutex_unlock(&c_bridge->base.lock);
 }
 
 static void prim_panel_off_delayed_work(struct work_struct *work)
@@ -1395,8 +1522,10 @@ struct dsi_bridge *dsi_drm_bridge_init(struct dsi_display *display,
 		atomic_set(&resume_pending, 0);
 		wakeup_source_init(&prim_panel_wakelock, "prim_panel_wakelock");
 		atomic_set(&prim_panel_is_on, false);
+		atomic_set(&aod_grace_active, 0);
 		init_waitqueue_head(&resume_wait_q);
 		INIT_DELAYED_WORK(&prim_panel_work, prim_panel_off_delayed_work);
+		INIT_DELAYED_WORK(&aod_grace_work, dsi_bridge_aod_grace_work);
 	}
 
 	return bridge;
@@ -1412,8 +1541,10 @@ void dsi_drm_bridge_cleanup(struct dsi_bridge *bridge)
 		bridge->base.encoder->bridge = NULL;
 
 	if (bridge == gbridge) {
+		dsi_display_cancel_aod_grace(true);
 		atomic_set(&prim_panel_is_on, false);
 		cancel_delayed_work_sync(&prim_panel_work);
+		cancel_delayed_work_sync(&aod_grace_work);
 		wakeup_source_trash(&prim_panel_wakelock);
 	}
 
