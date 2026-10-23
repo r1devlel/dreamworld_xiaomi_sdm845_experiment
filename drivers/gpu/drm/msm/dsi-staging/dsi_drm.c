@@ -419,6 +419,23 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 		return;
 	}
 
+	/*
+	 * The AOD path above puts the primary panel into LP1 without userspace
+	 * explicitly changing the DRM LP property.  On the next screen-on the
+	 * generic power path clears the panel doze state, but doze_state itself
+	 * would otherwise stay at LP1 and make the following screen-off skip
+	 * panel powerdown.  Exit doze here and let the normal enable path run.
+	 */
+	if (c_bridge->display && c_bridge->display->panel &&
+			c_bridge->display->is_prim_display &&
+			(dev->doze_state == DRM_BLANK_LP1 ||
+			 dev->doze_state == DRM_BLANK_LP2)) {
+		if (c_bridge->display->panel->panel_initialized)
+			dsi_panel_set_nolp(c_bridge->display->panel);
+		dev->doze_state = DRM_BLANK_UNBLANK;
+		dev->pre_state = SDE_MODE_DPMS_ON;
+	}
+
 	if (c_bridge->dsi_mode.dsi_mode_flags &
 			(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
 			 DSI_MODE_FLAG_DYN_CLK)) {
