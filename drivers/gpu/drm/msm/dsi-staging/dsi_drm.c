@@ -380,6 +380,21 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	 */
 	if (c_bridge->display && c_bridge->display->panel &&
 			c_bridge->display->is_prim_display &&
+			atomic_read(&prim_panel_is_on) &&
+			mi_display_is_aod_enabled() &&
+			c_bridge->display->panel->doze_enabled) {
+		/*
+		 * Notification 1 can arrive before the framework powers the
+		 * display back on to compose the AOD layer.  The generic power
+		 * path may already have cleared doze_state even though the panel
+		 * is still physically in LP1.  Preserve the doze state from the
+		 * panel itself so enable does not run the normal post-enable.
+		 */
+		dev->doze_state = DRM_BLANK_LP1;
+		dev->pre_state = SDE_MODE_DPMS_LP1;
+		pr_info("%s keep AOD doze (panel doze)\n", __func__);
+	} else if (c_bridge->display && c_bridge->display->panel &&
+			c_bridge->display->is_prim_display &&
 			atomic_read(&aod_grace_active) &&
 			(dev->doze_state == DRM_BLANK_LP1 ||
 			 dev->doze_state == DRM_BLANK_LP2)) {
@@ -640,7 +655,8 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 			(atomic_read(&aod_grace_active) ||
 			 (mi_display_is_aod_enabled() &&
 			  (dev->doze_state == DRM_BLANK_LP1 ||
-			   dev->doze_state == DRM_BLANK_LP2)))) {
+			   dev->doze_state == DRM_BLANK_LP2 ||
+			   (display->panel && display->panel->doze_enabled))))) {
 		pr_info("%s keep AOD doze, skip post_enable\n", __func__);
 		dsi_bridge_enter_aod(c_bridge);
 		return;

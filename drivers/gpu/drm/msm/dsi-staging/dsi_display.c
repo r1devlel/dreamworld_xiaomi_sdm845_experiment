@@ -174,17 +174,13 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	requested_bl = bl_lvl;
 
 	/*
-	 * The framework requests a very low UI brightness when it powers the
-	 * panel up for AOD.  A doze transition may not have happened yet if the
-	 * display enable path did not observe the notification, so make this
-	 * brightness update enter AOD before applying the backlight.
+	 * Do not enter AOD from a backlight update.  A user wake also updates
+	 * the backlight while the AOD notification is still active for a few
+	 * milliseconds; entering AOD here re-enables LP1 after the display has
+	 * already been powered on, which makes the screen blink before the
+	 * notification 0 callback exits AOD.  The notification and display
+	 * enable paths handle real AOD entry.
 	 */
-	if (mi_display_is_aod_enabled() && dsi_display->is_prim_display &&
-			panel->panel_initialized && !panel->doze_enabled &&
-			bl_lvl) {
-		pr_info("%s enter AOD on backlight update\n", __func__);
-		dsi_display_enter_aod();
-	}
 
 	mutex_lock(&panel->panel_lock);
 	if (!dsi_panel_initialized(panel)) {
@@ -1272,12 +1268,22 @@ int dsi_display_set_power(struct drm_connector *connector,
 		 * AOD notification has been received.  That power-on request
 		 * must not clear LP1; the notification 0 callback does that when
 		 * the user wakes the device.
+		 *
+		 * panel->doze_enabled is also checked because the generic power
+		 * path may have already cleared doze_state while the panel is
+		 * still physically in LP1.  This happens when notification 1
+		 * arrives before the display power-up used to compose AOD.  If
+		 * LP1 is lost in that window the normal post-enable path runs
+		 * and the AOD layer is not visible.
 		 */
-		if (mi_display_is_aod_enabled() &&
+		if (display->is_prim_display && mi_display_is_aod_enabled() &&
 				(dev->doze_state == DRM_BLANK_LP1 ||
-				 dev->doze_state == DRM_BLANK_LP2)) {
+				 dev->doze_state == DRM_BLANK_LP2 ||
+				 display->panel->doze_enabled)) {
 			pr_info("%s keep AOD doze\n", __func__);
-			break;
+			dev->doze_state = DRM_BLANK_LP1;
+			dev->pre_state = SDE_MODE_DPMS_LP1;
+			return rc;
 		}
 		drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 		rc = dsi_panel_set_nolp(display->panel);
