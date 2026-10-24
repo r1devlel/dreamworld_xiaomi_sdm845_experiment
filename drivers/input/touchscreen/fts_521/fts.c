@@ -121,7 +121,7 @@ do { \
 #define INPUT_EVENT_END				13
 
 /* Discard the taps that belong to a double-tap wake gesture. */
-#define FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS	700
+#define FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS	200
 
 extern SysInfo systemInfo;
 extern TestToDo tests;
@@ -2610,6 +2610,19 @@ static bool fts_is_gesture_wake_touch_suppressed(struct fts_ts_info *info)
 			   msecs_to_jiffies(FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS));
 }
 
+/*
+ * While the panel is in gesture/AOD mode, the firmware can still deliver
+ * pointer events for the taps that make up a double-tap gesture.  Those
+ * events must not reach Android: the AOD keyguard interprets the same
+ * taps as double-tap-to-sleep and can put the panel back into AOD right
+ * after the wake key.  Keep pointer input disabled until DRM unblank
+ * sets resume_bit.
+ */
+static bool fts_is_gesture_mode_touch(struct fts_ts_info *info)
+{
+	return info->gesture_enabled && !info->resume_bit;
+}
+
 /**
 * Event Handler for no events (EVT_ID_NOEVENT)
 */
@@ -2658,6 +2671,9 @@ static void fts_enter_pointer_event_handler(struct fts_ts_info *info,
 	unsigned int touch_condition = 1, tool = MT_TOOL_FINGER;
 	int x, y, z, distance;
 	u8 touchType;
+
+	if (fts_is_gesture_mode_touch(info))
+		return;
 
 	if (fts_is_gesture_wake_touch_suppressed(info))
 		return;
@@ -2768,6 +2784,9 @@ static void fts_leave_pointer_event_handler(struct fts_ts_info *info,
 #ifdef CONFIG_INPUT_PRESS_NDT
 	int x, y;
 #endif
+
+	if (fts_is_gesture_mode_touch(info))
+		return;
 
 	if (fts_is_gesture_wake_touch_suppressed(info))
 		return;
