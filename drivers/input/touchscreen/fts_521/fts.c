@@ -62,6 +62,7 @@
 #include <drm/drm_panel.h>
 #endif
 #include <linux/backlight.h>
+#include <linux/mi_display.h>
 
 
 #include <linux/fb.h>
@@ -121,7 +122,8 @@ do { \
 #define INPUT_EVENT_END				13
 
 /* Discard the taps that belong to a double-tap wake gesture. */
-#define FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS	200
+#define FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS	700
+#define FTS_DTW_WAKE_HINT_MS			3000
 
 extern SysInfo systemInfo;
 extern TestToDo tests;
@@ -2610,18 +2612,22 @@ static bool fts_is_gesture_wake_touch_suppressed(struct fts_ts_info *info)
 			   msecs_to_jiffies(FTS_GESTURE_WAKE_TOUCH_SUPPRESS_MS));
 }
 
+static unsigned long fts_dtw_wake_jiffies;
+
 /*
- * While the panel is in gesture/AOD mode, the firmware can still deliver
- * pointer events for the taps that make up a double-tap gesture.  Those
- * events must not reach Android: the AOD keyguard interprets the same
- * taps as double-tap-to-sleep and can put the panel back into AOD right
- * after the wake key.  Keep pointer input disabled until DRM unblank
- * sets resume_bit.
+ * A double-tap wake can arrive while the display is still in the AOD
+ * screen-off grace window.  Export the event so the display driver can
+ * run the normal wake path instead of holding the panel in LP1/black.
+ * With AOD enabled the notification path still owns the transition; this
+ * hint is only consumed when the AOD notification is absent.
  */
-static bool fts_is_gesture_mode_touch(struct fts_ts_info *info)
+bool fts_recent_double_tap_wake(void)
 {
-	return info->gesture_enabled && !info->resume_bit;
+	return fts_dtw_wake_jiffies &&
+	       time_before(jiffies, fts_dtw_wake_jiffies +
+			   msecs_to_jiffies(FTS_DTW_WAKE_HINT_MS));
 }
+EXPORT_SYMBOL_GPL(fts_recent_double_tap_wake);
 
 /**
 * Event Handler for no events (EVT_ID_NOEVENT)
@@ -2671,9 +2677,6 @@ static void fts_enter_pointer_event_handler(struct fts_ts_info *info,
 	unsigned int touch_condition = 1, tool = MT_TOOL_FINGER;
 	int x, y, z, distance;
 	u8 touchType;
-
-	if (fts_is_gesture_mode_touch(info))
-		return;
 
 	if (fts_is_gesture_wake_touch_suppressed(info))
 		return;
@@ -2784,9 +2787,6 @@ static void fts_leave_pointer_event_handler(struct fts_ts_info *info,
 #ifdef CONFIG_INPUT_PRESS_NDT
 	int x, y;
 #endif
-
-	if (fts_is_gesture_mode_touch(info))
-		return;
 
 	if (fts_is_gesture_wake_touch_suppressed(info))
 		return;
@@ -3188,6 +3188,7 @@ static void fts_gesture_event_handler(struct fts_ts_info *info,
 				goto gesture_done;
 			value = KEY_WAKEUP;
 			pr_info("%s: double tap !\n", __func__);
+			fts_dtw_wake_jiffies = jiffies;
 			info->gesture_wake_jiffies = jiffies;
 			needCoords = 0;
 			break;

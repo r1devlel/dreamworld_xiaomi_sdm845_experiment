@@ -1220,6 +1220,7 @@ int dsi_display_set_power(struct drm_connector *connector,
 	struct drm_notify_data g_notify_data;
 	int rc = 0;
 	int event = 0;
+	bool dtw_wake = fts_recent_double_tap_wake();
 
 	if (!display || !display->panel) {
 		pr_err("invalid display/panel\n");
@@ -1257,7 +1258,8 @@ int dsi_display_set_power(struct drm_connector *connector,
 		 * or the grace timer finishes the transition.
 		 */
 		if (dsi_display_aod_grace_active() &&
-				display->is_prim_display) {
+				display->is_prim_display &&
+				!(dtw_wake && !mi_display_is_aod_enabled())) {
 			pr_info("%s keep AOD grace doze\n", __func__);
 			dev->doze_state = DRM_BLANK_LP1;
 			dev->pre_state = SDE_MODE_DPMS_LP1;

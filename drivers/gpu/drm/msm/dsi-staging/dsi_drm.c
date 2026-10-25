@@ -344,10 +344,11 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	struct drm_device *dev = bridge->dev;
 	struct sde_connector *c_conn = to_sde_connector(c_bridge->display->drm_conn);
 	int event = 0;
+	bool dtw_wake = fts_recent_double_tap_wake();
 
-	pr_info("%s begin doze=%d prim_on=%d aod=%d\n", __func__,
+	pr_info("%s begin doze=%d prim_on=%d aod=%d dtw=%d\n", __func__,
 		dev->doze_state, atomic_read(&prim_panel_is_on),
-		mi_display_is_aod_enabled());
+		mi_display_is_aod_enabled(), dtw_wake);
 
 	if (dev->doze_state == DRM_BLANK_POWERDOWN) {
 		dev->doze_state = DRM_BLANK_UNBLANK;
@@ -396,6 +397,7 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	} else if (c_bridge->display && c_bridge->display->panel &&
 			c_bridge->display->is_prim_display &&
 			atomic_read(&aod_grace_active) &&
+			!(dtw_wake && !mi_display_is_aod_enabled()) &&
 			(dev->doze_state == DRM_BLANK_LP1 ||
 			 dev->doze_state == DRM_BLANK_LP2)) {
 		/*
@@ -403,6 +405,11 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 		 * the panel is still in our LP1 grace hold.  Do not run the
 		 * normal panel-on path here; notification 1 will apply the
 		 * doze backlight, or the grace timer will power the panel off.
+		 *
+		 * A hardware double-tap wake is a real user wake, not an AOD
+		 * composition power-on.  If AOD is disabled there will be no
+		 * notification 1 to take over, so let the LP1 branch below
+		 * exit doze and run the normal panel-on sequence.
 		 */
 		pr_info("%s keep AOD grace doze\n", __func__);
 	} else if (c_bridge->display && c_bridge->display->panel &&
@@ -627,15 +634,19 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 	struct dsi_bridge *c_bridge = to_dsi_bridge(bridge);
 	struct dsi_display *display;
 	struct drm_device *dev = bridge->dev;
+	bool dtw_wake = fts_recent_double_tap_wake();
+	bool keep_grace = atomic_read(&aod_grace_active) &&
+		!(dtw_wake && !mi_display_is_aod_enabled());
 
 	if (!bridge) {
 		pr_err("Invalid params\n");
 		return;
 	}
 
-	pr_info("%s begin doze=%d prim_on=%d aod=%d grace=%d\n", __func__,
+	pr_info("%s begin doze=%d prim_on=%d aod=%d grace=%d dtw=%d\n", __func__,
 		bridge->dev->doze_state, atomic_read(&prim_panel_is_on),
-		mi_display_is_aod_enabled(), atomic_read(&aod_grace_active));
+		mi_display_is_aod_enabled(), atomic_read(&aod_grace_active),
+		dtw_wake);
 
 	if (c_bridge->dsi_mode.dsi_mode_flags &
 			(DSI_MODE_FLAG_SEAMLESS | DSI_MODE_FLAG_VRR |
@@ -652,7 +663,7 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 	 * controller before the AOD layer is ready.
 	 */
 	if (display->is_prim_display && atomic_read(&prim_panel_is_on) &&
-			(atomic_read(&aod_grace_active) ||
+			(keep_grace ||
 			 (mi_display_is_aod_enabled() &&
 			  (dev->doze_state == DRM_BLANK_LP1 ||
 			   dev->doze_state == DRM_BLANK_LP2 ||
@@ -833,15 +844,24 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 		return;
 	}
 
-	if (mi_display_is_aod_enabled()) {
+	display = c_bridge->display;
+	dev = c_bridge->base.dev;
+
+	/*
+	 * A real wake may have taken the normal panel-on path while the
+	 * grace work was pending.  Do not power the panel off underneath an
+	 * awake display: Android already believes the screen is on.
+	 */
+	if (mi_display_is_aod_enabled() ||
+			(dev && (dev->doze_state == DRM_BLANK_UNBLANK ||
+				 dev->pre_state == SDE_MODE_DPMS_ON))) {
 		atomic_set(&aod_grace_active, 0);
 		__pm_relax(&prim_panel_wakelock);
+		pr_info("AOD grace ended, display stays awake\n");
 		mutex_unlock(&c_bridge->base.lock);
 		return;
 	}
 
-	display = c_bridge->display;
-	dev = c_bridge->base.dev;
 	atomic_set(&aod_grace_active, 0);
 
 	pr_info("AOD grace expired, powering panel off\n");
