@@ -21,6 +21,7 @@
 #include <linux/notifier.h>
 #include <drm/drm_bridge.h>
 #include <linux/pm_wakeup.h>
+#include <linux/delay.h>
 #include <linux/mi_display.h>
 #include <soc/qcom/socinfo.h>
 
@@ -41,6 +42,7 @@ static BLOCKING_NOTIFIER_HEAD(drm_notifier_list);
 struct dsi_bridge *gbridge;
 static struct delayed_work prim_panel_work;
 static atomic_t prim_panel_is_on;
+static atomic_t prim_panel_enable_failed;
 static struct wakeup_source prim_panel_wakelock;
 
 /*
@@ -344,6 +346,7 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	struct drm_device *dev = bridge->dev;
 	struct sde_connector *c_conn = to_sde_connector(c_bridge->display->drm_conn);
 	int event = 0;
+	int attempt;
 	bool dtw_wake = fts_recent_double_tap_wake();
 
 	pr_info("%s begin doze=%d prim_on=%d aod=%d dtw=%d\n", __func__,
@@ -369,6 +372,8 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 		return;
 	}
 
+	if (c_bridge->display->is_prim_display)
+		atomic_set(&prim_panel_enable_failed, 0);
 	atomic_set(&c_bridge->display->panel->esd_recovery_pending, 0);
 	c_conn->panel_dead = false;
 
@@ -425,8 +430,16 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 			 */
 			pr_info("%s keep AOD doze\n", __func__);
 		} else {
+			rc = 0;
 			if (c_bridge->display->panel->panel_initialized)
-				dsi_panel_set_nolp(c_bridge->display->panel);
+				rc = dsi_panel_set_nolp(c_bridge->display->panel);
+
+			if (rc || !c_bridge->display->panel->panel_initialized) {
+				pr_err("%s LP1 exit failed, retry full panel on, rc=%d\n",
+				       __func__, rc);
+				atomic_set(&prim_panel_is_on, false);
+			}
+
 			dev->doze_state = DRM_BLANK_UNBLANK;
 			dev->pre_state = SDE_MODE_DPMS_ON;
 		}
@@ -459,6 +472,8 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 	if (rc) {
 		pr_err("[%d] failed to perform a mode set, rc=%d\n",
 		       c_bridge->id, rc);
+		if (c_bridge->display->is_prim_display)
+			atomic_set(&prim_panel_enable_failed, 1);
 		return;
 	}
 
@@ -471,25 +486,58 @@ static void dsi_bridge_pre_enable(struct drm_bridge *bridge)
 
 	SDE_ATRACE_BEGIN("dsi_bridge_pre_enable");
 
-	rc = dsi_display_prepare(c_bridge->display);
+	/*
+	 * Panel power-on can time out if the first command races the resume of
+	 * the DSI/panel supplies.  The old error path still marked the panel as
+	 * on, so every later enable skipped the real power-on sequence and the
+	 * display stayed black.  Retry the full prepare/enable cycle a few
+	 * times; if it still fails, leave the software state off so a later
+	 * wake can try again.
+	 */
+	for (attempt = 0; attempt < 3; attempt++) {
+		rc = dsi_display_prepare(c_bridge->display);
+		if (rc) {
+			pr_err("[%d] DSI display prepare failed (attempt %d), rc=%d\n",
+			       c_bridge->id, attempt + 1, rc);
+			break;
+		}
+
+		SDE_ATRACE_BEGIN("dsi_display_enable");
+		rc = dsi_display_enable(c_bridge->display);
+		SDE_ATRACE_END("dsi_display_enable");
+		if (!rc)
+			break;
+
+		pr_err("[%d] DSI display enable failed (attempt %d), rc=%d\n",
+		       c_bridge->id, attempt + 1, rc);
+		(void)dsi_display_unprepare(c_bridge->display);
+		msleep(50);
+	}
+
 	if (rc) {
-		pr_err("[%d] DSI display prepare failed, rc=%d\n",
-		       c_bridge->id, rc);
+		pr_err("[%d] DSI display wake failed after retries, panel stays off\n",
+		       c_bridge->id);
+		if (c_bridge->display->is_prim_display) {
+			atomic_set(&prim_panel_is_on, false);
+			atomic_set(&prim_panel_enable_failed, 1);
+			c_bridge->display->panel->panel_initialized = false;
+			dev->doze_state = DRM_BLANK_POWERDOWN;
+			dev->pre_state = SDE_MODE_DPMS_OFF;
+
+			event = DRM_BLANK_POWERDOWN;
+			g_notify_data.data = &event;
+			drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK,
+						&g_notify_data);
+			drm_notifier_call_chain(DRM_EVENT_BLANK,
+						&g_notify_data);
+		}
+
 		SDE_ATRACE_END("dsi_bridge_pre_enable");
 		return;
 	}
 
-	SDE_ATRACE_BEGIN("dsi_display_enable");
-	rc = dsi_display_enable(c_bridge->display);
-	if (rc) {
-		pr_err("[%d] DSI display enable failed, rc=%d\n",
-				c_bridge->id, rc);
-		(void)dsi_display_unprepare(c_bridge->display);
-	}
-
 	drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 
-	SDE_ATRACE_END("dsi_display_enable");
 	SDE_ATRACE_END("dsi_bridge_pre_enable");
 
 	rc = dsi_display_splash_res_cleanup(c_bridge->display);
@@ -655,6 +703,17 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 		return;
 	}
 	display = c_bridge->display;
+
+	/*
+	 * pre_enable may have failed to power the panel on.  The DRM core still
+	 * calls this callback, but running post-enable (and entering AOD) on an
+	 * unprepared panel leaves the display wedged in a black state.
+	 */
+	if (display->is_prim_display &&
+			atomic_read(&prim_panel_enable_failed)) {
+		pr_err("%s panel enable failed, skip post_enable\n", __func__);
+		return;
+	}
 
 	/*
 	 * The panel is already prepared and held in LP1 for AOD or for the
@@ -832,7 +891,6 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 	struct dsi_bridge *c_bridge = gbridge;
 	struct dsi_display *display;
 	struct drm_device *dev;
-	int rc;
 
 	if (!c_bridge || !c_bridge->display || !c_bridge->display->panel)
 		return;
@@ -864,18 +922,25 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 
 	atomic_set(&aod_grace_active, 0);
 
-	pr_info("AOD grace expired, powering panel off\n");
+	/*
+	 * Do not unprepare the display from this work.  If the normal wake
+	 * path has already failed and unprepared it, calling unprepare again
+	 * destroys an already-destroyed controller workqueue and panics.
+	 * Keeping a still-valid panel in LP1 also avoids the long screen-off
+	 * power-on failure: a later DTW can use the same nolp/unblank path
+	 * that works during the grace window.
+	 */
+	if (atomic_read(&prim_panel_is_on) && display->panel->panel_initialized) {
+		dev->doze_state = DRM_BLANK_LP1;
+		dev->pre_state = SDE_MODE_DPMS_LP1;
+		pr_info("AOD grace ended, panel stays in LP1 for safe wake\n");
+	} else {
+		atomic_set(&prim_panel_is_on, false);
+		dev->doze_state = DRM_BLANK_POWERDOWN;
+		dev->pre_state = SDE_MODE_DPMS_OFF;
+		pr_info("AOD grace ended, panel already off\n");
+	}
 
-	dev->doze_state = DRM_BLANK_POWERDOWN;
-	dev->pre_state = SDE_MODE_DPMS_OFF;
-
-	rc = dsi_display_disable(display);
-	if (!rc)
-		rc = dsi_display_unprepare(display);
-	if (rc)
-		pr_err("AOD grace panel off failed, rc=%d\n", rc);
-
-	atomic_set(&prim_panel_is_on, false);
 	dev->fp_quickon = false;
 	__pm_relax(&prim_panel_wakelock);
 
@@ -1590,6 +1655,7 @@ struct dsi_bridge *dsi_drm_bridge_init(struct dsi_display *display,
 		atomic_set(&resume_pending, 0);
 		wakeup_source_init(&prim_panel_wakelock, "prim_panel_wakelock");
 		atomic_set(&prim_panel_is_on, false);
+		atomic_set(&prim_panel_enable_failed, 0);
 		atomic_set(&aod_grace_active, 0);
 		init_waitqueue_head(&resume_wait_q);
 		INIT_DELAYED_WORK(&prim_panel_work, prim_panel_off_delayed_work);
