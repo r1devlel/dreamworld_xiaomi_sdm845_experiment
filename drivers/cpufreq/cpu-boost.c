@@ -36,10 +36,10 @@ static struct work_struct input_boost_work;
 
 static bool input_boost_enabled;
 
-static unsigned int input_boost_ms = 40;
+static unsigned int input_boost_ms = 400;
 module_param(input_boost_ms, uint, 0644);
 
-static unsigned int sched_boost_on_input;
+static unsigned int sched_boost_on_input = 1;
 module_param(sched_boost_on_input, uint, 0644);
 
 static bool sched_boost_active;
@@ -326,7 +326,16 @@ static int cpu_boost_init(void)
 	for_each_possible_cpu(cpu) {
 		s = &per_cpu(sync_info, cpu);
 		s->cpu = cpu;
+
+		/*
+		 * Dipper: CPU0-3 are the Silver cluster and CPU4-7 are Gold.
+		 * Use frequencies that exist in both SDM845 OPP tables.
+		 * These defaults are overridable through the module
+		 * parameters if a game needs a different profile.
+		 */
+		s->input_boost_freq = (cpu < 4) ? 1420800 : 1843200;
 	}
+	input_boost_enabled = true;
 	cpufreq_register_notifier(&boost_adjust_nb, CPUFREQ_POLICY_NOTIFIER);
 
 	ret = input_register_handler(&cpuboost_input_handler);
