@@ -23,6 +23,7 @@
 extern bool ksu_su_compat_enabled __read_mostly;
 extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
+extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
 #endif
 #ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
 extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat);
@@ -291,6 +292,11 @@ SYSCALL_DEFINE2(fstat, unsigned int, fd, struct __old_kernel_stat __user *, stat
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
 
+#ifdef CONFIG_KSU_SUSFS
+	if (!error)
+		ksu_handle_vfs_fstat(fd, &stat.size);
+#endif
+
 	if (!error)
 		error = cp_old_stat(&stat, statbuf);
 
@@ -399,6 +405,11 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
+
+#ifdef CONFIG_KSU_SUSFS
+	if (!error)
+		ksu_handle_vfs_fstat(fd, &stat.size);
+#endif
 
 	if (!error)
 		error = cp_new_stat(&stat, statbuf);
@@ -517,6 +528,11 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
+
+#ifdef CONFIG_KSU_SUSFS
+	if (!error)
+		ksu_handle_vfs_fstat(fd, &stat.size);
+#endif
 
 	if (!error)
 		error = cp_new_stat64(&stat, statbuf);
