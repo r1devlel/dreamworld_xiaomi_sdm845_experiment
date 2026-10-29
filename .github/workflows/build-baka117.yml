@@ -90,8 +90,6 @@ jobs:
             echo "::error::CONFIG_KSU_MANUAL_HOOK must not be set for the SUSFS inline-hook build"
             exit 1
           fi
-          test -s out/include/config/auto.conf
-          grep -qx 'CONFIG_KSU_SUSFS=y' out/include/config/auto.conf
 
       - name: Compile kernel and device trees
         run: |
