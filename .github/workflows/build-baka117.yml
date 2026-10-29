@@ -100,7 +100,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
             OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
-            LLVM_IAS=0 prepare
+            LLVM_IAS=0 prepare init/version.o
 
           make -j"$(nproc)" O=out \
             ARCH=arm64 CC=clang-18 CLANG_TRIPLE=aarch64-linux-gnu- \
