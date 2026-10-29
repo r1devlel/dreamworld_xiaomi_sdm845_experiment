@@ -91,6 +91,22 @@ jobs:
             exit 1
           fi
 
+      - name: Compile root-hiding objects
+        run: |
+          set -euxo pipefail
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 CC=clang-18 CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 \
+            fs/susfs.o fs/exec.o fs/open.o fs/stat.o fs/read_write.o \
+            fs/namei.o fs/namespace.o fs/proc/base.o fs/proc/fd.o \
+            fs/proc/task_mmu.o fs/proc_namespace.o fs/readdir.o fs/statfs.o \
+            kernel/sys.o kernel/reboot.o kernel/kallsyms.o \
+            security/selinux/avc.o drivers/input/input.o drivers/kernelsu/
+
       - name: Compile kernel and device trees
         run: |
           set -euxo pipefail
