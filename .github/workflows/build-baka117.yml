@@ -1,0 +1,122 @@
+name: Build Xiaomi Mi 8 (dipper) #117 BakaSU/SUSFS
+
+on:
+  push:
+    branches:
+      - baka117
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dipper-kernel-baka117-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Compile #117 (Linux 4.9 / SDM845 / BakaSU + SUSFS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential binutils-aarch64-linux-gnu cpio flex git \
+            libelf-dev libncurses-dev libssl-dev libc6-dev-arm64-cross clang-18 lld-18 llvm-18 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi python3 python-is-python3 \
+            rsync dwarves pahole zip
+
+      - name: Show source and KSU source
+        run: |
+          set -euxo pipefail
+          git rev-parse --short HEAD
+          grep -E '^(VERSION|PATCHLEVEL|SUBLEVEL) =' Makefile
+          test -s KernelSU/kernel/Kconfig
+          test -s KernelSU/kernel/Kbuild
+          test -s fs/susfs.c
+          grep -n 'SUSFS_VERSION' include/linux/susfs.h
+          clang-18 --version
+          ld.lld-18 --version
+
+      - name: Configure for Xiaomi Mi 8
+        run: |
+          set -euxo pipefail
+          export ARCH=arm64
+          export CC=clang-18
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+
+          make O=out \
+            ARCH="$ARCH" CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 vendor/xiaomi/mi845_defconfig
+
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/vendor/xiaomi/dipper.config
+          scripts/kconfig/merge_config.sh -m -O out out/.config \
+            arch/arm64/configs/vendor/xiaomi/baka117.config
+
+          make O=out \
+            ARCH="$ARCH" CC="$CC" CLANG_TRIPLE="$CLANG_TRIPLE" \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            CROSS_COMPILE_ARM32="$CROSS_COMPILE_ARM32" \
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 olddefconfig
+
+          echo "=== KSU/SUSFS final configuration ==="
+          grep -E '^(CONFIG_KSU|CONFIG_KSU_SUSFS|CONFIG_KSU_MANUAL_HOOK|CONFIG_THREAD_INFO_IN_TASK|CONFIG_KALLSYMS|CONFIG_OVERLAY_FS)=|^# CONFIG_(KSU|KSU_SUSFS|THREAD_INFO_IN_TASK) is not set' out/.config || true
+
+          for symbol in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_THREAD_INFO_IN_TASK CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL CONFIG_OVERLAY_FS; do
+            if ! grep -qx "${symbol}=y" out/.config; then
+              echo "::error::Required kernel config missing: ${symbol}=y"
+              exit 1
+            fi
+          done
+          if grep -qx 'CONFIG_KSU_MANUAL_HOOK=y' out/.config; then
+            echo "::error::CONFIG_KSU_MANUAL_HOOK must not be set for the SUSFS inline-hook build"
+            exit 1
+          fi
+          test -s out/include/config/auto.conf
+          grep -qx 'CONFIG_KSU_SUSFS=y' out/include/config/auto.conf
+
+      - name: Compile kernel and device trees
+        run: |
+          set -euxo pipefail
+          make -j"$(nproc)" O=out \
+            ARCH=arm64 CC=clang-18 CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- \
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            LD=ld.lld-18 AR=llvm-ar-18 NM=llvm-nm-18 \
+            OBJCOPY=llvm-objcopy-18 OBJDUMP=llvm-objdump-18 STRIP=llvm-strip-18 \
+            LLVM_IAS=0 V=1 Image.gz-dtb
+
+          test -s out/arch/arm64/boot/Image.gz-dtb
+          test -s out/fs/susfs.o
+          test -s out/drivers/kernelsu/kernelsu.o
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+          echo "Kernel + SUSFS + KSU objects built."
+
+      - name: Upload kernel artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dipper-baka117-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            out/arch/arm64/boot/Image.gz-dtb
+            out/arch/arm64/boot/Image.gz
