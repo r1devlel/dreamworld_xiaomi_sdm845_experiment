@@ -79,7 +79,7 @@ static void ksu_handle_bprm_committed_creds(const struct linux_binprm *bprm)
 static void ksu_handle_bprm_committed_creds(struct linux_binprm *bprm)
 #endif
 {
-    ksu_handle_post_execve(NULL, NULL, NULL, NULL, NULL, NULL);
+    ksu_handle_post_execve_common(NULL, NULL, NULL, NULL, NULL, NULL);
 }
 #endif
 
@@ -278,7 +278,7 @@ show_not_found_warning:
     pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
     pr_alert("**                                                         **");
     pr_alert("**                 selinux_ops NOT FOUND                   **");
-    pr_alert("**     ReSukiSU won't working due lost necessary hooks     **");
+    pr_alert("**       BakaSU won't working due lost necessary hooks     **");
     pr_alert("**                                                         **");
     pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
     pr_alert("*************************************************************");

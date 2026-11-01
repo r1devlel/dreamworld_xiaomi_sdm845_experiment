@@ -1,9 +1,10 @@
-name: Build Xiaomi Mi 8 (dipper) BakaSU v4.2.0-rc3 + SUSFS v2.3.0
+name: Build Xiaomi Mi 8 (dipper) BakaSU UAPI6 + SUSFS v2.3.0
 
 on:
   push:
     branches:
       - bakasu-v420rc3
+      - bakasu-uapi6
   workflow_dispatch:
 
 permissions:
@@ -43,6 +44,8 @@ jobs:
           test -s KernelSU/kernel/Kconfig
           test -s KernelSU/kernel/Kbuild
           test -s fs/susfs.c
+          grep -n 'KERNEL_SU_UAPI_VERSION' KernelSU/uapi/supercall.h
+          grep -q 'KERNEL_SU_UAPI_VERSION = 6' KernelSU/uapi/supercall.h
           grep -n 'SUSFS_VERSION' include/linux/susfs.h
           clang-18 --version
           ld.lld-18 --version
@@ -136,7 +139,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: dipper-bakasu-v420rc3-${{ github.run_number }}
+          name: dipper-bakasu-uapi6-${{ github.run_number }}
           if-no-files-found: error
           retention-days: 7
           path: |
