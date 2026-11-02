@@ -4,6 +4,7 @@
 #include <linux/types.h>
 
 bool mi_display_is_aod_enabled(void);
+void mi_display_set_aod_enabled(bool enabled);
 void dsi_display_enter_aod(void);
 void dsi_display_exit_aod(void);
 bool dsi_display_aod_grace_active(void);

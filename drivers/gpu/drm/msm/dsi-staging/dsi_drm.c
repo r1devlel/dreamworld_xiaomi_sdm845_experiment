@@ -198,6 +198,14 @@ void dsi_display_exit_aod(void)
 	if (!dev)
 		return;
 
+	/*
+	 * AOD is no longer active after this callback.  HyperOS normally sends
+	 * notification 0 first, but the synthetic DTW/timeout and grace-wake
+	 * exits must also clear the flag so a lost notification cannot leave a
+	 * stale AOD request behind for the next screen-off.
+	 */
+	mi_display_set_aod_enabled(false);
+
 	dsi_display_cancel_aod_grace(true);
 	WRITE_ONCE(aod_entered_jiffies, 0);
 

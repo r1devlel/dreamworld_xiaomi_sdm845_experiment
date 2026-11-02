@@ -54,6 +54,12 @@ bool mi_display_is_aod_enabled(void)
 }
 EXPORT_SYMBOL_GPL(mi_display_is_aod_enabled);
 
+void mi_display_set_aod_enabled(bool enabled)
+{
+	WRITE_ONCE(mi_display_aod_enabled, enabled);
+}
+EXPORT_SYMBOL_GPL(mi_display_set_aod_enabled);
+
 static long mi_display_ioctl(struct file *file, unsigned int cmd,
 			     unsigned long arg)
 {
