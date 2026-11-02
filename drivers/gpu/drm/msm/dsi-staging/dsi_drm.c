@@ -22,6 +22,7 @@
 #include <drm/drm_bridge.h>
 #include <linux/pm_wakeup.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/mi_display.h>
 #include <soc/qcom/socinfo.h>
 
@@ -52,7 +53,17 @@ static struct wakeup_source prim_panel_wakelock;
  */
 static struct delayed_work aod_grace_work;
 static atomic_t aod_grace_active;
+static atomic_t aod_grace_wake_pending;
+static unsigned long aod_entered_jiffies;
 #define AOD_GRACE_MS 3000
+/*
+ * HyperOS normally sends AOD notification 0 when the user wakes the device.
+ * If that notification is lost (the MIUI AOD plugin has been seen failing),
+ * a panel-on request after the AOD composition window must still be able to
+ * leave LP1.  AOD composition happens immediately after notification 1, while
+ * a real user wake can happen at any later time.
+ */
+#define AOD_WAKE_EXIT_MS 2000
 
 struct drm_notify_data g_notify_data;
 
@@ -65,8 +76,23 @@ bool dsi_display_aod_grace_active(void)
 	return atomic_read(&aod_grace_active);
 }
 
+bool dsi_display_aod_wake_expired(void)
+{
+	unsigned long entered = READ_ONCE(aod_entered_jiffies);
+
+	return entered && time_after(jiffies,
+			entered + msecs_to_jiffies(AOD_WAKE_EXIT_MS));
+}
+
+void dsi_display_note_aod_grace_wake(void)
+{
+	if (atomic_read(&aod_grace_active))
+		atomic_set(&aod_grace_wake_pending, 1);
+}
+
 static void dsi_display_cancel_aod_grace(bool relax)
 {
+	atomic_set(&aod_grace_wake_pending, 0);
 	if (atomic_xchg(&aod_grace_active, 0)) {
 		cancel_delayed_work_sync(&aod_grace_work);
 		if (relax)
@@ -107,6 +133,9 @@ static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
 		return;
 	if (!mi_display_is_aod_enabled())
 		return;
+
+	if (!READ_ONCE(aod_entered_jiffies))
+		WRITE_ONCE(aod_entered_jiffies, jiffies);
 
 	panel = c_bridge->display->panel;
 	dev = c_bridge->base.dev;
@@ -170,6 +199,7 @@ void dsi_display_exit_aod(void)
 		return;
 
 	dsi_display_cancel_aod_grace(true);
+	WRITE_ONCE(aod_entered_jiffies, 0);
 
 	if (dev->doze_state != DRM_BLANK_LP1 &&
 			dev->doze_state != DRM_BLANK_LP2 &&
@@ -185,16 +215,32 @@ void dsi_display_exit_aod(void)
 	g_notify_data.data = &event;
 	drm_notifier_call_chain(DRM_EARLY_EVENT_BLANK, &g_notify_data);
 
-	if (atomic_read(&prim_panel_is_on) && panel->panel_initialized)
+	if (atomic_read(&prim_panel_is_on) && panel->panel_initialized) {
 		dsi_panel_set_nolp(panel);
 
-	dev->doze_state = DRM_BLANK_UNBLANK;
-	dev->pre_state = SDE_MODE_DPMS_ON;
+		dev->doze_state = DRM_BLANK_UNBLANK;
+		dev->pre_state = SDE_MODE_DPMS_ON;
+
+		/*
+		 * The normal bridge-enable path is skipped while AOD holds the
+		 * panel in LP1, so sde_connector_helper_bridge_disable() has
+		 * already set bl_power to FB_BLANK_POWERDOWN and blocked
+		 * backlight updates.  Restore that state here, otherwise the
+		 * panel leaves LP1 but stays black with bl_power=4.
+		 */
+		if (c_bridge->display->drm_conn)
+			sde_connector_helper_bridge_enable(
+					c_bridge->display->drm_conn);
+	} else {
+		dev->doze_state = DRM_BLANK_UNBLANK;
+		dev->pre_state = SDE_MODE_DPMS_ON;
+	}
 
 	drm_notifier_call_chain(DRM_EVENT_BLANK, &g_notify_data);
 
-	pr_info("%s AOD exited, doze=%d panel_doze=%d\n", __func__,
-		dev->doze_state, panel->doze_enabled);
+	pr_info("%s AOD exited, doze=%d panel_doze=%d bl=%u\n", __func__,
+		dev->doze_state, panel->doze_enabled,
+		panel->bl_config.bl_level);
 }
 EXPORT_SYMBOL_GPL(dsi_display_exit_aod);
 
@@ -727,6 +773,8 @@ static void dsi_bridge_enable(struct drm_bridge *bridge)
 			  (dev->doze_state == DRM_BLANK_LP1 ||
 			   dev->doze_state == DRM_BLANK_LP2 ||
 			   (display->panel && display->panel->doze_enabled))))) {
+		if (keep_grace)
+			dsi_display_note_aod_grace_wake();
 		pr_info("%s keep AOD doze, skip post_enable\n", __func__);
 		dsi_bridge_enter_aod(c_bridge);
 		return;
@@ -808,11 +856,14 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 			if (!bl_lvl)
 				bl_lvl = 133;
 			dsi_panel_set_backlight(panel, bl_lvl);
+			WRITE_ONCE(aod_entered_jiffies, jiffies);
 		} else {
 			dev->doze_state = DRM_BLANK_LP1;
 			dev->pre_state = SDE_MODE_DPMS_LP1;
+			WRITE_ONCE(aod_entered_jiffies, 0);
 
 			if (!atomic_read(&aod_grace_active)) {
+				atomic_set(&aod_grace_wake_pending, 0);
 				__pm_stay_awake(&prim_panel_wakelock);
 				atomic_set(&aod_grace_active, 1);
 			}
@@ -906,6 +957,23 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 	dev = c_bridge->base.dev;
 
 	/*
+	 * A panel-on request during the grace hold is normally the request
+	 * that composes the AOD layer.  If that request arrives without a
+	 * following AOD notification, it was a real user wake and the panel
+	 * must leave LP1 through the normal connector/backlight path.
+	 */
+	if (atomic_read(&aod_grace_wake_pending) &&
+			!mi_display_is_aod_enabled()) {
+		atomic_set(&aod_grace_active, 0);
+		atomic_set(&aod_grace_wake_pending, 0);
+		__pm_relax(&prim_panel_wakelock);
+		mutex_unlock(&c_bridge->base.lock);
+		pr_info("AOD grace woke without AOD, restore display\n");
+		dsi_display_exit_aod();
+		return;
+	}
+
+	/*
 	 * A real wake may have taken the normal panel-on path while the
 	 * grace work was pending.  Do not power the panel off underneath an
 	 * awake display: Android already believes the screen is on.
@@ -914,6 +982,7 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 			(dev && (dev->doze_state == DRM_BLANK_UNBLANK ||
 				 dev->pre_state == SDE_MODE_DPMS_ON))) {
 		atomic_set(&aod_grace_active, 0);
+		atomic_set(&aod_grace_wake_pending, 0);
 		__pm_relax(&prim_panel_wakelock);
 		pr_info("AOD grace ended, display stays awake\n");
 		mutex_unlock(&c_bridge->base.lock);
@@ -921,6 +990,7 @@ static void dsi_bridge_aod_grace_work(struct work_struct *work)
 	}
 
 	atomic_set(&aod_grace_active, 0);
+	atomic_set(&aod_grace_wake_pending, 0);
 
 	/*
 	 * Do not unprepare the display from this work.  If the normal wake

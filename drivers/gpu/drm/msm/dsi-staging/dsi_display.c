@@ -1249,6 +1249,27 @@ int dsi_display_set_power(struct drm_connector *connector,
 					dev->pre_state != SDE_MODE_DPMS_LP2)
 			break;
 		/*
+		 * A real DTW wake, or a panel-on request that arrives long
+		 * after the AOD composition window, must leave LP1 even if the
+		 * MIUI AOD notification 0 was lost.  Otherwise the framework
+		 * believes the screen is on while the panel is held in doze
+		 * with bl_power=4.
+		 */
+		if (power_mode == SDE_MODE_DPMS_ON &&
+				display->is_prim_display &&
+				mi_display_is_aod_enabled() &&
+				(dev->doze_state == DRM_BLANK_LP1 ||
+				 dev->doze_state == DRM_BLANK_LP2 ||
+				 display->panel->doze_enabled) &&
+				(dtw_wake || dsi_display_aod_wake_expired())) {
+			pr_info("%s AOD user wake, exit doze dtw=%d expired=%d\n",
+				__func__, dtw_wake,
+				dsi_display_aod_wake_expired());
+			dsi_display_exit_aod();
+			break;
+		}
+
+		/*
 		 * The framework powers the panel back on to compose the AOD
 		 * layer before SurfaceFlinger sends the AOD notification.
 		 * Keep LP1 and do not send UNBLANK yet: a normal panel-on
@@ -1259,7 +1280,9 @@ int dsi_display_set_power(struct drm_connector *connector,
 		 */
 		if (dsi_display_aod_grace_active() &&
 				display->is_prim_display &&
+				power_mode == SDE_MODE_DPMS_ON &&
 				!(dtw_wake && !mi_display_is_aod_enabled())) {
+			dsi_display_note_aod_grace_wake();
 			pr_info("%s keep AOD grace doze\n", __func__);
 			dev->doze_state = DRM_BLANK_LP1;
 			dev->pre_state = SDE_MODE_DPMS_LP1;
