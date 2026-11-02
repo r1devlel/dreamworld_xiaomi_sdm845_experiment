@@ -159,6 +159,9 @@ static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
 
 	if (dev->doze_state == DRM_BLANK_LP1 && panel->doze_enabled) {
 		dsi_panel_set_backlight(panel, bl_lvl);
+		if (c_bridge->display->drm_conn)
+			sde_connector_helper_bridge_enable(
+					c_bridge->display->drm_conn);
 		pr_info("%s AOD backlight refreshed, doze=%d bl=%u\n", __func__,
 			dev->doze_state, bl_lvl);
 		return;
@@ -170,6 +173,15 @@ static void dsi_bridge_enter_aod(struct dsi_bridge *c_bridge)
 	dsi_panel_set_doze_mode(panel, DSI_DOZE_HBM);
 	dsi_panel_set_lp1(panel);
 	dsi_panel_set_backlight(panel, bl_lvl);
+	/*
+	 * bridge_disable() runs before the AOD layer is announced and leaves
+	 * bl_power at FB_BLANK_POWERDOWN.  Restore the connector here as well,
+	 * otherwise the AOD layer is composed while the backlight class still
+	 * gates brightness at zero.
+	 */
+	if (c_bridge->display->drm_conn)
+		sde_connector_helper_bridge_enable(
+				c_bridge->display->drm_conn);
 
 	pr_info("%s AOD entered, doze=%d panel_doze=%d bl=%u\n", __func__,
 		dev->doze_state, panel->doze_enabled, bl_lvl);
@@ -864,6 +876,15 @@ static void dsi_bridge_post_disable(struct drm_bridge *bridge)
 			if (!bl_lvl)
 				bl_lvl = 133;
 			dsi_panel_set_backlight(panel, bl_lvl);
+			/*
+			 * sde_connector_helper_bridge_disable() has already set
+			 * bl_power to FB_BLANK_POWERDOWN before post_disable.
+			 * Re-enable the connector so the AOD backlight is not
+			 * gated to zero while the panel stays in LP1.
+			 */
+			if (c_bridge->display->drm_conn)
+				sde_connector_helper_bridge_enable(
+						c_bridge->display->drm_conn);
 			WRITE_ONCE(aod_entered_jiffies, jiffies);
 		} else {
 			dev->doze_state = DRM_BLANK_LP1;
