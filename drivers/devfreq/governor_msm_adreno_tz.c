@@ -58,6 +58,13 @@ static DEFINE_SPINLOCK(suspend_lock);
 
 #define TAG "msm_adreno_tz: "
 
+/*
+ * Adrenoboost biases the GPU busy-time samples upward before they are fed to
+ * the TrustZone DCVS algorithm. 0 disables it; 1-3 increase the bias. Keep the
+ * default conservative so idle workloads are not pushed to a higher OPP.
+ */
+static unsigned int adrenoboost = 1;
+
 static u64 suspend_time;
 static u64 suspend_start;
 static unsigned long acc_total, acc_relative_busy;
@@ -134,6 +141,28 @@ static ssize_t suspend_time_show(struct device *dev,
 	return snprintf(buf, PAGE_SIZE, "%llu\n", time_diff);
 }
 
+static ssize_t adrenoboost_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return scnprintf(buf, PAGE_SIZE, "%u\n", adrenoboost);
+}
+
+static ssize_t adrenoboost_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int input;
+
+	if (sscanf(buf, "%u", &input) != 1 || input > 3)
+		return -EINVAL;
+
+	adrenoboost = input;
+	return count;
+}
+
+static DEVICE_ATTR(adrenoboost, 0644,
+		adrenoboost_show,
+		adrenoboost_store);
+
 static DEVICE_ATTR(gpu_load, 0444, gpu_load_show, NULL);
 
 static DEVICE_ATTR(suspend_time, 0444,
@@ -143,6 +172,7 @@ static DEVICE_ATTR(suspend_time, 0444,
 static const struct device_attribute *adreno_tz_attr_list[] = {
 		&dev_attr_gpu_load,
 		&dev_attr_suspend_time,
+		&dev_attr_adrenoboost,
 		NULL
 };
 
@@ -374,7 +404,18 @@ static int tz_get_target_freq(struct devfreq *devfreq, unsigned long *freq)
 
 	*freq = stats.current_frequency;
 	priv->bin.total_time += stats.total_time;
-	priv->bin.busy_time += stats.busy_time;
+
+	/*
+	 * Only bias samples that are already busy enough to matter. This keeps
+	 * idle/2D workloads at their normal OPP while giving 60fps UI bursts a
+	 * little more headroom.
+	 */
+	if (adrenoboost &&
+	    (priv->bin.busy_time + stats.busy_time >= MIN_BUSY))
+		priv->bin.busy_time += stats.busy_time *
+			(1 + (adrenoboost * 3) / 2);
+	else
+		priv->bin.busy_time += stats.busy_time;
 
 	if (stats.private_data)
 		context_count =  *((int *)stats.private_data);
