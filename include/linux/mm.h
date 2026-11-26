@@ -159,6 +159,26 @@ extern int mmap_rnd_compat_bits __read_mostly;
 
 extern int sysctl_max_map_count;
 
+/*
+ * le9uo (workingset protection) - see mm/util.c and mm/vmscan.c
+ */
+extern int sysctl_workingset_protection;
+/* 4.9 adaptation: int, not u8 -- 4.9's intvec sysctls read/write sizeof(int) */
+extern int sysctl_anon_min_ratio;
+extern int sysctl_clean_low_ratio;
+extern int sysctl_clean_min_ratio;
+/*
+ * 4.9's proc_handler typedef takes a non-const struct ctl_table *, so these
+ * drop the const upstream le9uo uses (with -Werror the const form is an
+ * incompatible-function-pointer-types error on this tree).
+ */
+int vm_workingset_protection_update_handler(
+	struct ctl_table *table, int write,
+	void __user *buffer, size_t *lenp, loff_t *ppos);
+int vm_workingset_protection_bool_handler(
+	struct ctl_table *table, int write,
+	void __user *buffer, size_t *lenp, loff_t *ppos);
+
 extern unsigned long sysctl_user_reserve_kbytes;
 extern unsigned long sysctl_admin_reserve_kbytes;
 
@@ -793,6 +813,8 @@ int alloc_set_pte(struct fault_env *fe, struct mem_cgroup *memcg,
 #define NODES_PGOFF		(SECTIONS_PGOFF - NODES_WIDTH)
 #define ZONES_PGOFF		(NODES_PGOFF - ZONES_WIDTH)
 #define LAST_CPUPID_PGOFF	(ZONES_PGOFF - LAST_CPUPID_WIDTH)
+#define LRU_GEN_PGOFF		(LAST_CPUPID_PGOFF - LRU_GEN_WIDTH)
+#define LRU_REFS_PGOFF		(LRU_GEN_PGOFF - LRU_REFS_WIDTH)
 
 /*
  * Define the bit shifts to access each section.  For non-existent
@@ -1357,6 +1379,16 @@ struct mm_walk {
 	struct vm_area_struct *vma;
 	void *private;
 };
+
+#ifndef arch_has_hw_pte_young
+/*
+ * Return whether the accessed bit is supported by the local CPU or all CPUs.
+ */
+static inline bool arch_has_hw_pte_young(bool local)
+{
+	return false;
+}
+#endif
 
 int walk_page_range(unsigned long addr, unsigned long end,
 		struct mm_walk *walk);

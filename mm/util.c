@@ -539,6 +539,36 @@ int sysctl_max_map_count __read_mostly = DEFAULT_MAX_MAP_COUNT;
 unsigned long sysctl_user_reserve_kbytes __read_mostly = 1UL << 17; /* 128MB */
 unsigned long sysctl_admin_reserve_kbytes __read_mostly = 1UL << 13; /* 8MB */
 
+/*
+ * le9uo working set protection (firelzrd v1.15).
+ *
+ * vm.workingset_protection gates the protection logic in mm/vmscan.c and the
+ * three vm.*_ratio knobs define how much of the node's anonymous / clean file
+ * pages must never be reclaimed.  The sysctl table entries themselves live in
+ * kernel/sysctl.c on this tree (4.9 has no mm/util.c sysctl table), and the
+ * write handlers live in mm/vmscan.c next to the cached node totals they have
+ * to invalidate.
+ *
+ * Default is on, per firelzrd's "vm.workingset_protection: On by default".
+ * This is the ONE definition of the symbol; mm/vmscan.c only consumes it.
+ */
+/*
+ * 4.9 adaptation: int, not bool -- proc_dobool does not exist in this tree and
+ * 4.9's intvec sysctls read/write sizeof(int). The handler normalises it to
+ * 0/1, and every consumer only tests it for truth.
+ */
+int sysctl_workingset_protection __read_mostly = 1;
+/*
+ * 4.9 adaptation: upstream le9uo declares these u8 and uses
+ * proc_dou8vec_minmax + SYSCTL_ZERO/SYSCTL_ONE_HUNDRED, none of which exist
+ * on 4.9 -- and 4.9's intvec machinery always reads/writes sizeof(int), so a
+ * u8 variable would be read and written 4 bytes wide. int keeps the sysctl
+ * honest; the 0..100 range is clamped in the handler in mm/vmscan.c.
+ */
+int sysctl_anon_min_ratio __read_mostly = CONFIG_ANON_MIN_RATIO;
+int sysctl_clean_low_ratio __read_mostly = CONFIG_CLEAN_LOW_RATIO;
+int sysctl_clean_min_ratio __read_mostly = CONFIG_CLEAN_MIN_RATIO;
+
 int overcommit_ratio_handler(struct ctl_table *table, int write,
 			     void __user *buffer, size_t *lenp,
 			     loff_t *ppos)

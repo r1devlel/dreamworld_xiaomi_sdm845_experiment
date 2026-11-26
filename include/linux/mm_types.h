@@ -13,6 +13,8 @@
 #include <linux/uprobes.h>
 #include <linux/page-flags-layout.h>
 #include <linux/workqueue.h>
+#include <linux/nodemask.h>
+#include <linux/mmdebug.h>
 #include <asm/page.h>
 #include <asm/mmu.h>
 
@@ -540,7 +542,82 @@ struct mm_struct {
 	atomic_long_t hugetlb_usage;
 #endif
 	struct work_struct async_put_work;
+#ifdef CONFIG_LRU_GEN
+		struct {
+			/* the node of a global or per-memcg mm_struct list */
+			struct list_head list;
+#ifdef CONFIG_MEMCG
+			/* points to the memcg of the owner task above */
+			struct mem_cgroup *memcg;
+#endif
+			/* whether this mm_struct has been used since the last walk */
+			nodemask_t nodes;
+#ifndef CONFIG_ARCH_WANT_BATCHED_UNMAP_TLB_FLUSH
+			/* the number of CPUs using this mm_struct */
+			atomic_t nr_cpus;
+#endif
+		} lrugen;
+#endif /* CONFIG_LRU_GEN */
+
 };
+
+#ifdef CONFIG_LRU_GEN
+
+struct lru_gen_mm_list {
+	/* a global or per-memcg mm_struct list */
+	struct list_head fifo;
+	/* protects the list above */
+	spinlock_t lock;
+};
+
+void lru_gen_add_mm(struct mm_struct *mm);
+void lru_gen_del_mm(struct mm_struct *mm);
+#ifdef CONFIG_MEMCG
+void lru_gen_migrate_mm(struct mm_struct *mm);
+#endif
+
+static inline void lru_gen_init_mm(struct mm_struct *mm)
+{
+	INIT_LIST_HEAD(&mm->lrugen.list);
+#ifdef CONFIG_MEMCG
+	mm->lrugen.memcg = NULL;
+#endif
+	atomic_set(&mm->lrugen.nr_cpus, 0);
+	nodes_clear(mm->lrugen.nodes);
+}
+
+static inline void lru_gen_switch_mm(struct mm_struct *old, struct mm_struct *new)
+{
+	if (old && !core_kernel_data((unsigned long)old)) {
+		nodes_setall(old->lrugen.nodes);
+		atomic_dec(&old->lrugen.nr_cpus);
+	}
+
+	if (new && !core_kernel_data((unsigned long)new)) {
+		VM_WARN_ON(list_empty(&new->lrugen.list));
+		atomic_inc(&new->lrugen.nr_cpus);
+	}
+}
+
+static inline bool lru_gen_mm_is_active(struct mm_struct *mm)
+{
+	return atomic_read(&mm->lrugen.nr_cpus);
+}
+
+
+#else /* !CONFIG_LRU_GEN */
+
+static inline void lru_gen_add_mm(struct mm_struct *mm) {}
+static inline void lru_gen_del_mm(struct mm_struct *mm) {}
+#ifdef CONFIG_MEMCG
+static inline void lru_gen_migrate_mm(struct mm_struct *mm) {}
+#endif
+static inline void lru_gen_init_mm(struct mm_struct *mm) {}
+static inline void lru_gen_switch_mm(struct mm_struct *old, struct mm_struct *new) {}
+static inline bool lru_gen_mm_is_active(struct mm_struct *mm) { return false; }
+
+#endif /* CONFIG_LRU_GEN */
+
 
 static inline void mm_init_cpumask(struct mm_struct *mm)
 {
