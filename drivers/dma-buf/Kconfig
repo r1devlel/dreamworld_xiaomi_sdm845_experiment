@@ -29,4 +29,16 @@ config SW_SYNC
 	  WARNING: improper use of this can result in deadlocking kernel
 	  drivers from userspace. Intended for test and debug only.
 
+config DMABUF_HEAPS
+	bool "DMA-BUF Userspace Heap Interface"
+	depends on DMA_SHARED_BUFFER
+	default n
+	---help---
+	  This option enables the DMA-BUF heaps interface for userspace
+	  allocation of DMA-BUF buffers from named heaps.
+
+if DMABUF_HEAPS
+source "drivers/dma-buf/heaps/Kconfig"
+endif
+
 endmenu
