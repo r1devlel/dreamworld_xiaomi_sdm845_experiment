@@ -3027,8 +3027,17 @@ context_switch(struct rq *rq, struct task_struct *prev,
 		next->active_mm = oldmm;
 		atomic_inc(&oldmm->mm_count);
 		enter_lazy_tlb(oldmm, next);
-	} else
+	} else {
 		switch_mm_irqs_off(oldmm, mm, next);
+		/*
+		 * lru_gen_switch_mm() dereferences new->lrugen, so this must
+		 * stay inside the mm != NULL branch exactly as it does in
+		 * 5.15 (right after switch_mm_irqs_off()). A kernel thread
+		 * has next->mm == NULL, and the lazy tlb path above keeps
+		 * oldmm active anyway, so there is nothing to account for.
+		 */
+		lru_gen_switch_mm(oldmm, mm);
+	}
 
 	if (!prev->mm) {
 		prev->active_mm = NULL;
@@ -5757,6 +5766,7 @@ void idle_task_exit(void)
 
 	if (mm != &init_mm) {
 		switch_mm(mm, &init_mm, current);
+		lru_gen_switch_mm(mm, &init_mm);
 		finish_arch_post_lock_switch();
 	}
 	mmdrop(mm);

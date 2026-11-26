@@ -108,6 +108,9 @@ union swap_header {
  */
 struct reclaim_state {
 	unsigned long reclaimed_slab;
+#ifdef CONFIG_LRU_GEN
+	struct mm_walk_args *mm_walk_args;
+#endif
 };
 
 #ifdef __KERNEL__

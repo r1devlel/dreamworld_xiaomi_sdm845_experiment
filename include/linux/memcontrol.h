@@ -271,6 +271,14 @@ struct mem_cgroup {
 	struct list_head event_list;
 	spinlock_t event_list_lock;
 
+#ifdef CONFIG_LRU_GEN
+	/*
+	 * Must come before nodeinfo[0]. nodeinfo is a zero-length array that
+	 * contributes nothing to sizeof(), so anything placed after it shares
+	 * its address, and nodeinfo[0] would then alias mm_list.fifo.
+	 */
+	struct lru_gen_mm_list mm_list;
+#endif
 	struct mem_cgroup_per_node *nodeinfo[0];
 	/* WARNING: nodeinfo must be the last member here */
 };
