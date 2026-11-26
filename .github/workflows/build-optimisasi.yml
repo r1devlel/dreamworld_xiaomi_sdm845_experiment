@@ -150,7 +150,9 @@ jobs:
 
           test -s out/arch/arm64/boot/Image.gz-dtb
           test -s out/mm/vmscan.o
-          llvm-nm-18 out/mm/vmscan.o | awk '{print $NF}' | grep -qx 'lru_gen_add_mm'
+          llvm-nm-18 out/mm/vmscan.o > out/vmscan.nm
+          awk '{print $NF}' out/vmscan.nm > out/vmscan.symbols
+          grep -qx 'lru_gen_add_mm' out/vmscan.symbols
           ls -lh out/arch/arm64/boot/Image.gz-dtb
           echo "Kernel + MGLRU + BakaSU/SUSFS built."
 
