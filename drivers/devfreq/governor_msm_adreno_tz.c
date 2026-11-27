@@ -60,10 +60,10 @@ static DEFINE_SPINLOCK(suspend_lock);
 
 /*
  * Adrenoboost biases the GPU busy-time samples upward before they are fed to
- * the TrustZone DCVS algorithm. 0 disables it; 1-3 increase the bias. Keep the
- * default conservative so idle workloads are not pushed to a higher OPP.
+ * the TrustZone DCVS algorithm. 0 disables it; 1-3 increase the bias. Keep it
+ * off by default and let the user opt in when a workload needs more headroom.
  */
-static unsigned int adrenoboost = 1;
+static unsigned int adrenoboost;
 
 static u64 suspend_time;
 static u64 suspend_start;
