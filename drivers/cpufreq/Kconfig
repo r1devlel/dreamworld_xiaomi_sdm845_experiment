@@ -250,6 +250,66 @@ config CPU_BOOST
 
 	  If in doubt, say N.
 
+config CPU_INPUT_BOOST
+	bool "CPU Input Boost"
+	depends on CPU_FREQ
+	help
+	  Boosts the CPU on touchscreen and touchpad input, and on display
+	  wake.  The boost frequencies should be high enough to keep frame
+	  drops near zero without wasting power.
+
+if CPU_INPUT_BOOST
+
+config INPUT_BOOST_DURATION_MS
+	int "Input boost duration"
+	default "400"
+	help
+	  Input boost duration in milliseconds.
+
+config WAKE_BOOST_DURATION_MS
+	int "Wake boost duration"
+	default "1000"
+	help
+	  Wake boost duration in milliseconds.
+
+config INPUT_BOOST_FREQ_LP
+	int "Low-power cluster boost freq"
+	default "1420800"
+	help
+	  Input boost frequency for the low-power CPU cluster.
+
+config INPUT_BOOST_FREQ_PERF
+	int "Performance cluster boost freq"
+	default "1843200"
+	help
+	  Input boost frequency for the performance CPU cluster.
+
+config MAX_BOOST_FREQ_LP
+	int "Low-power cluster max-boost freq"
+	default "1766400"
+	help
+	  Max-boost frequency for the low-power CPU cluster.
+
+config MAX_BOOST_FREQ_PERF
+	int "Performance cluster max-boost freq"
+	default "2803200"
+	help
+	  Max-boost frequency for the performance CPU cluster.
+
+config CPU_FREQ_MIN_LP
+	int "Low-power cluster minimum freq"
+	default "300000"
+	help
+	  Minimum frequency for the low-power CPU cluster.
+
+config CPU_FREQ_MIN_PERF
+	int "Performance cluster minimum freq"
+	default "300000"
+	help
+	  Minimum frequency for the performance CPU cluster.
+
+endif
+
 config CPU_FREQ_GOV_SCHEDUTIL
 	bool "'schedutil' cpufreq policy governor"
 	depends on CPU_FREQ && SMP

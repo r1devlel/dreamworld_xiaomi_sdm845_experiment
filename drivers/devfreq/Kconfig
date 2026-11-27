@@ -80,6 +80,37 @@ config DEVFREQ_GOV_CPUFREQ
 	  CPU frequency to device frequency mapping table(s). This governor
 	  can be useful for controlling devices such as DDR, cache, CCI, etc.
 
+config DEVFREQ_BOOST
+	bool "Devfreq boost driver"
+	help
+	  Boosts devfreq devices on input and display wake events.  This is
+	  used to raise CPU-to-DDR bandwidth quickly for latency-sensitive
+	  workloads such as UI rendering.
+
+if DEVFREQ_BOOST
+
+config DEVFREQ_INPUT_BOOST_DURATION_MS
+	int "Devfreq input boost duration"
+	default "400"
+	help
+	  Input boost duration in milliseconds.
+
+config DEVFREQ_WAKE_BOOST_DURATION_MS
+	int "Devfreq wake boost duration"
+	default "1000"
+	help
+	  Wake boost duration in milliseconds.
+
+config DEVFREQ_MSM_CPUBW_BOOST_FREQ
+	int "MSM CPUBW boost frequency"
+	default "8132"
+	help
+	  Minimum bandwidth frequency to request while boosting the
+	  CPU-to-DDR path.  The SDM845 cpubw table is expressed in MB/s;
+	  8132 corresponds to the 533 MHz entry.
+
+endif
+
 config QCOM_BIMC_BWMON
 	tristate "QCOM BIMC Bandwidth monitor hardware"
 	depends on ARCH_QCOM
