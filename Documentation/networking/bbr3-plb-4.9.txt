@@ -1,0 +1,79 @@
+BBRv3 + PLB backport for 4.9 (tcp_bbr3 / tcp_plb)
+=================================================
+
+This tree carries a backport of Google's BBRv3 congestion control
+("bbr3") plus Protective Load Balancing (PLB) to the 4.9 TCP stack,
+adapted from a 4.9.337-based custom port (commit 3f5f26436926,
+rangga-sdm845/BakaSU-SUSFS).
+
+What was added
+--------------
+
+net/ipv4/tcp_bbr3.c   BBRv3 implementation, registered as "bbr3". It
+                      coexists with the existing BBRv1 module
+                      (CONFIG_TCP_CONG_BBR / tcp_bbr.c, unchanged);
+                      both can be selected per-socket or via sysctl.
+net/ipv4/tcp_plb.c    PLB helpers (rehash on sustained congestion /
+                      idle, RTO suspension), always built into IPv4.
+include/net/tcp.h     struct bbr3, struct tcp_plb_state + prototypes,
+                      tcp_plb_sysctl_params/tcp_plb_net_context,
+                      rate_sample extensions (tx_in_flight, lost,
+                      delivered_ce, is_ece, is_ack_delayed,
+                      last_end_seq, is_acking_tlp_retrans_seq),
+                      TCP_CONG_WANTS_CE_EVENTS, CA_EVENT_TLP_RECOVERY,
+                      TCP_ECN_LOW/TCP_ECN_ECT_PERMANENT,
+                      tcp_snd_cwnd{,_set}, tcp_stamp32_us_delta,
+                      bbr_stamp_us_delta_after, tcp_skb_sent_after,
+                      tcp_skb_tx_in_flight_is_suspicious,
+                      tcp_jiffies32.
+include/linux/tcp.h   tcp_sock: delivered_ce counter,
+                      fast_ack_mode/tlp_orig_data_app_limited bits.
+uapi inet_diag.h      BBRv3 INET_DIAG_BBRINFO extension fields and
+                      tcp_bbr_phase enum (additive, ABI-safe).
+uapi rtnetlink.h      RTAX_FEATURE_ECN_LOW (+TCP_USEC_TS) feature bit.
+
+4.9 adaptations (relative to newer-kernel BBRv3)
+------------------------------------------------
+
+- No u64 tp->tcp_mstamp on 4.9: bbr3 keeps struct skb_mstamp for
+  cycle_mstamp/ack_epoch_mstamp, like tcp_sock.delivered_mstamp.
+- No EDT: bbr_packets_in_net_at_edt() returns inflight_now.
+- PLB sysctls are global (tcp_plb_global_ctx in sysctl_net_ipv4.c,
+  exported GPL) instead of per-netns.
+- ECN CE tracking is done directly instead of via dctcp helpers.
+- tcp_skb_cb.tx keeps its original 24-byte budget (cb[48]
+  BUILD_BUG_ON in tcp_init): the "start of send pipeline phase"
+  timestamp is stored as first_tx_stamp_us (u32 microseconds) and
+  delivered_ce:20/lost:12 share the word that carried
+  stamp_jiffies. Delivery-rate intervals below ~71 minutes stay
+  exact; longer intervals yield a skipped sample rather than a
+  wrong rate. tx.in_flight gains the upstream 30-bit cap.
+- tcp_rate_skb_delivered() picks samples with tcp_skb_sent_after()
+  (send-time, tie-broken by seq) as upstream does.
+- delayed-ACK heuristic (FLAG_ACK_MAYBE_DELAYED) does not exist on
+  4.9; rs->is_ack_delayed is always 0.
+- SO_RCVLOWAT-aware ack check plus BBRv3 fast_ack_mode in
+  __tcp_ack_snd_check() (vendor MPTCP select_window variant kept).
+
+New sysctls (net.ipv4.*)
+------------------------
+
+tcp_plb_enabled (0/1, default 0), tcp_plb_idle_rehash_rounds,
+tcp_plb_rehash_rounds, tcp_plb_suspend_rto_sec, tcp_plb_cong_thresh.
+PLB only repaths when tcp_plb_enabled=1 and a cong control asks for
+it (currently bbr3).
+
+Kconfig
+-------
+
+CONFIG_TCP_CONG_BBR3 (tristate, default n) builds tcp_bbr3.o;
+tcp_plb.o is part of obj-y. "bbr3" also appears in the default
+congestion control choice (DEFAULT_BBR3).
+
+Related RCU fix
+---------------
+
+kernel/rcu/tree.c: rcu_report_qs_rdp() clears rdp->core_needs_qs
+when the CPU's qsmask bit is already cleared, avoiding repeated RCU
+softirqs while idle (Joel Fernandes, "rcu: Avoid unnecessary
+softirq when system is idle").

@@ -50,6 +50,22 @@ static int tcp_delack_seg_max = 60;
 static int tcp_use_userconfig_min;
 static int tcp_use_userconfig_max = 1;
 static int one_day_secs = 24 * 3600;
+static int tcp_plb_max_rounds = 31;
+static int tcp_plb_max_cong_thresh = 256;
+
+/* BBRv3 PLB (Protective Load Balancing) globals (4.9 adaption: global
+ * sysctls instead of per-net, matching 4.9 ipv4_table style).
+ */
+struct tcp_plb_net_context tcp_plb_global_ctx = {
+	.params = {
+		.sysctl_tcp_plb_enabled = 0,
+		.sysctl_tcp_plb_idle_rehash_rounds = 31,
+		.sysctl_tcp_plb_rehash_rounds = 31,
+		.sysctl_tcp_plb_suspend_rto_sec = 0,
+		.sysctl_tcp_plb_cong_thresh = 256,
+	},
+};
+EXPORT_SYMBOL_GPL(tcp_plb_global_ctx);
 
 /* Update system visible IP port range */
 static void set_local_port_range(struct net *net, int range[2])
@@ -626,6 +642,51 @@ static struct ctl_table ipv4_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &zero,
 		.extra2		= &thousand,
+	},
+	{
+		.procname	= "tcp_plb_enabled",
+		.data		= &tcp_plb_global_ctx.params.sysctl_tcp_plb_enabled,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "tcp_plb_idle_rehash_rounds",
+		.data		= &tcp_plb_global_ctx.params.sysctl_tcp_plb_idle_rehash_rounds,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_rounds,
+	},
+	{
+		.procname	= "tcp_plb_rehash_rounds",
+		.data		= &tcp_plb_global_ctx.params.sysctl_tcp_plb_rehash_rounds,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_rounds,
+	},
+	{
+		.procname	= "tcp_plb_suspend_rto_sec",
+		.data		= &tcp_plb_global_ctx.params.sysctl_tcp_plb_suspend_rto_sec,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_rounds,
+	},
+	{
+		.procname	= "tcp_plb_cong_thresh",
+		.data		= &tcp_plb_global_ctx.params.sysctl_tcp_plb_cong_thresh,
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &tcp_plb_max_cong_thresh,
 	},
 	{
 		.procname	= "tcp_autocorking",
