@@ -30,7 +30,10 @@ static inline void dctcp_ece_ack_update(struct sock *sk, enum tcp_ca_event evt,
 			dctcp_ece_ack_cwr(sk, *ce_state);
 			__tcp_send_ack(sk, *prior_rcv_nxt);
 		}
-		inet_csk(sk)->icsk_ack.pending |= ICSK_ACK_NOW;
+		/* 4.9 has no ICSK_ACK_NOW; force an immediate ACK via
+		 * quickack mode, as tcp_dctcp.c does for CE state changes.
+		 */
+		tcp_enter_quickack_mode(sk, 1);
 	}
 	*prior_rcv_nxt = tcp_sk(sk)->rcv_nxt;
 	*ce_state = new_ce_state;

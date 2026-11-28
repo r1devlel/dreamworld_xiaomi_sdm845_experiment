@@ -131,7 +131,8 @@ struct bbr {
 	u32	full_bw;	/* recent bw, to estimate if pipe is full */
 
 	/* For tracking ACK aggregation: */
-	u64	ack_epoch_mstamp;	/* start of ACK sampling epoch */
+	/* 4.9 adaption: mstamp is a struct skb_mstamp (as in tcp_sock). */
+	struct skb_mstamp ack_epoch_mstamp; /* start of ACK sampling epoch */
 	u16	extra_acked[2];		/* max excess data ACKed in epoch */
 	u32	ack_epoch_acked:20,	/* packets (S)ACKed in sampling epoch */
 		extra_acked_win_rtts:5,	/* age of extra_acked, in round trips */
@@ -590,7 +591,7 @@ static void bbr_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 
 	if (event == CA_EVENT_TX_START && tp->app_limited) {
 		bbr->idle_restart = 1;
-		bbr->ack_epoch_mstamp = tp->tcp_mstamp;
+		bbr->ack_epoch_mstamp = tp->delivered_mstamp;
 		bbr->ack_epoch_acked = 0;
 		/* Avoid pointless buffer overflows: pace at est. bw if we don't
 		 * need more speed (we're restarting from idle and app-limited).
@@ -879,8 +880,8 @@ static void bbr_update_ack_aggregation(struct sock *sk,
 	}
 
 	/* Compute how many packets we expected to be delivered over epoch. */
-	epoch_us = tcp_stamp_us_delta(tp->delivered_mstamp,
-				      bbr->ack_epoch_mstamp);
+	epoch_us = skb_mstamp_us_delta(&tp->delivered_mstamp,
+				       &bbr->ack_epoch_mstamp);
 	expected_acked = ((u64)bbr_bw(sk) * epoch_us) / BW_UNIT;
 
 	/* Reset the aggregation epoch if ACK rate is below expected rate or
@@ -1134,7 +1135,7 @@ static void bbr_init(struct sock *sk)
 	bbr->mode = BBR_STARTUP;
 	bbr->debug.rs_bw = 0;
 
-	bbr->ack_epoch_mstamp = tp->tcp_mstamp;
+	bbr->ack_epoch_mstamp = tp->delivered_mstamp;
 	bbr->ack_epoch_acked = 0;
 	bbr->extra_acked_win_rtts = 0;
 	bbr->extra_acked_win_idx = 0;
@@ -2437,7 +2438,7 @@ static void bbr2_skb_marked_lost(struct sock *sk, const struct sk_buff *skb)
 
 	if (!bbr->bw_probe_samples)
 		return;  /* not an skb sent while probing for bandwidth */
-	if (unlikely(!scb->tx.delivered_mstamp))
+	if (unlikely(!scb->tx.delivered_mstamp.v64))
 		return;  /* skb was SACKed, reneged, marked lost; ignore it */
 	/* We are probing for bandwidth. Construct a rate sample that
 	 * estimates what happened in the flight leading up to this lost skb,
@@ -2487,31 +2488,31 @@ static u32 bbr2_ssthresh(struct sock *sk)
 	return tcp_sk(sk)->snd_ssthresh;
 }
 
-static enum tcp_bbr2_phase bbr2_get_phase(struct bbr *bbr)
+static enum tcp_bbr_phase bbr2_get_phase(struct bbr *bbr)
 {
 	switch (bbr->mode) {
 	case BBR_STARTUP:
-		return BBR2_PHASE_STARTUP;
+		return BBR_PHASE_STARTUP;
 	case BBR_DRAIN:
-		return BBR2_PHASE_DRAIN;
+		return BBR_PHASE_DRAIN;
 	case BBR_PROBE_BW:
 		break;
 	case BBR_PROBE_RTT:
-		return BBR2_PHASE_PROBE_RTT;
+		return BBR_PHASE_PROBE_RTT;
 	default:
-		return BBR2_PHASE_INVALID;
+		return BBR_PHASE_INVALID;
 	}
 	switch (bbr->cycle_idx) {
 	case BBR_BW_PROBE_UP:
-		return BBR2_PHASE_PROBE_BW_UP;
+		return BBR_PHASE_PROBE_BW_UP;
 	case BBR_BW_PROBE_DOWN:
-		return BBR2_PHASE_PROBE_BW_DOWN;
+		return BBR_PHASE_PROBE_BW_DOWN;
 	case BBR_BW_PROBE_CRUISE:
-		return BBR2_PHASE_PROBE_BW_CRUISE;
+		return BBR_PHASE_PROBE_BW_CRUISE;
 	case BBR_BW_PROBE_REFILL:
-		return BBR2_PHASE_PROBE_BW_REFILL;
+		return BBR_PHASE_PROBE_BW_REFILL;
 	default:
-		return BBR2_PHASE_INVALID;
+		return BBR_PHASE_INVALID;
 	}
 }
 
