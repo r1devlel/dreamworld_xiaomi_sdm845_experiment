@@ -283,7 +283,7 @@ dispatch_request:
 	dd->batching++;
 	deadline_move_request(dd, rq);
 done:
-	rq->rq_flags |= RQF_STARTED;
+	set_bit(REQ_ATOM_STARTED, &rq->atomic_flags);
 	return rq;
 }
 

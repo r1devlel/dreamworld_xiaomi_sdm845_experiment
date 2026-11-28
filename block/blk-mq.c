@@ -775,6 +775,13 @@ static inline unsigned int queued_to_index(unsigned int queued)
 	return min(BLK_MQ_MAX_DISPATCH_ORDER - 1, ilog2(queued) + 1);
 }
 
+static void __blk_mq_insert_request_legacy(struct blk_mq_hw_ctx *hctx,
+					  struct request *rq, bool at_head);
+static void blk_mq_insert_requests_legacy(struct request_queue *q,
+					  struct blk_mq_ctx *ctx,
+					  struct list_head *list, int depth,
+					  bool from_schedule);
+
 void __blk_mq_insert_request(struct blk_mq_hw_ctx *hctx, struct request *rq,
 			     bool at_head)
 {
@@ -2009,6 +2016,7 @@ void blk_mq_release(struct request_queue *q)
 
 struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set)
 {
+	int err;
 	struct request_queue *uninit_q, *q;
 
 	uninit_q = blk_alloc_queue_node(GFP_KERNEL, set->numa_node);
@@ -2089,6 +2097,7 @@ static void blk_mq_realloc_hw_ctxs(struct blk_mq_tag_set *set,
 struct request_queue *blk_mq_init_allocated_queue(struct blk_mq_tag_set *set,
 						  struct request_queue *q)
 {
+	int err;
 	/* mark the queue as mq asap */
 	q->mq_ops = set->ops;
 

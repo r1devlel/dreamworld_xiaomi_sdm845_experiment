@@ -51,18 +51,22 @@ bool blk_mq_sched_try_merge(struct request_queue *q, struct bio *bio,
 			return false;
 		if (!bio_attempt_back_merge(q, rq, bio))
 			return false;
-		*merged_request = attempt_back_merge(q, rq);
-		if (!*merged_request)
-			elv_merged_request(q, rq, ELEVATOR_BACK_MERGE);
+		if (attempt_back_merge(q, rq)) {
+			*merged_request = rq;
+			return true;
+		}
+		elv_merged_request(q, rq, ELEVATOR_BACK_MERGE);
 		return true;
 	case ELEVATOR_FRONT_MERGE:
 		if (!blk_mq_sched_allow_merge(q, rq, bio))
 			return false;
 		if (!bio_attempt_front_merge(q, rq, bio))
 			return false;
-		*merged_request = attempt_front_merge(q, rq);
-		if (!*merged_request)
-			elv_merged_request(q, rq, ELEVATOR_FRONT_MERGE);
+		if (attempt_front_merge(q, rq)) {
+			*merged_request = rq;
+			return true;
+		}
+		elv_merged_request(q, rq, ELEVATOR_FRONT_MERGE);
 		return true;
 	default:
 		return false;
@@ -74,12 +78,12 @@ bool __blk_mq_sched_bio_merge(struct request_queue *q, struct bio *bio)
 {
 	struct elevator_queue *e = q->elevator;
 
-	if (e && e->uses_mq && e->type->ops.mq.bio_merge) {
+	if (e && e->uses_mq && e->type->mq.bio_merge) {
 		struct blk_mq_ctx *ctx = blk_mq_get_ctx(q);
 		struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(q, ctx->cpu);
 
 		blk_mq_put_ctx(ctx);
-		return e->type->ops.mq.bio_merge(hctx, bio);
+		return e->type->mq.bio_merge(hctx, bio);
 	}
 
 	return false;
@@ -155,11 +159,11 @@ void blk_mq_sched_insert_request(struct request *rq, bool at_head,
 	struct blk_mq_ctx *ctx = rq->mq_ctx;
 	struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(q, ctx->cpu);
 
-	if (e && e->uses_mq && e->type->ops.mq.insert_requests) {
+	if (e && e->uses_mq && e->type->mq.insert_requests) {
 		LIST_HEAD(list);
 
 		list_add(&rq->queuelist, &list);
-		e->type->ops.mq.insert_requests(hctx, &list, at_head);
+		e->type->mq.insert_requests(hctx, &list, at_head);
 	} else {
 		spin_lock(&ctx->lock);
 		__blk_mq_insert_request(hctx, rq, at_head);
@@ -178,8 +182,8 @@ void blk_mq_sched_insert_requests(struct request_queue *q,
 	struct blk_mq_hw_ctx *hctx = blk_mq_map_queue(q, ctx->cpu);
 	struct elevator_queue *e = q->elevator;
 
-	if (e && e->uses_mq && e->type->ops.mq.insert_requests)
-		e->type->ops.mq.insert_requests(hctx, list, false);
+	if (e && e->uses_mq && e->type->mq.insert_requests)
+		e->type->mq.insert_requests(hctx, list, false);
 	else
 		blk_mq_insert_requests(hctx, ctx, list);
 
@@ -192,7 +196,7 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	struct request_queue *q = hctx->queue;
 	struct elevator_queue *e = q->elevator;
 	const bool has_sched_dispatch = e && e->uses_mq &&
-					e->type->ops.mq.dispatch_request;
+					e->type->mq.dispatch_request;
 	bool did_work = false;
 	LIST_HEAD(rq_list);
 
@@ -219,21 +223,21 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	 */
 	if (!list_empty(&rq_list)) {
 		blk_mq_sched_mark_restart_hctx(hctx);
-		did_work = blk_mq_dispatch_rq_list(q, &rq_list);
+		did_work = blk_mq_dispatch_rq_list(hctx, &rq_list);
 	} else if (!has_sched_dispatch) {
 		blk_mq_flush_busy_ctxs(hctx, &rq_list);
-		blk_mq_dispatch_rq_list(q, &rq_list);
+		blk_mq_dispatch_rq_list(hctx, &rq_list);
 	}
 
 	if (!did_work && has_sched_dispatch) {
 		do {
 			struct request *rq;
 
-			rq = e->type->ops.mq.dispatch_request(hctx);
+			rq = e->type->mq.dispatch_request(hctx);
 			if (!rq)
 				break;
 			list_add(&rq->queuelist, &rq_list);
-		} while (blk_mq_dispatch_rq_list(q, &rq_list));
+		} while (blk_mq_dispatch_rq_list(hctx, &rq_list));
 	}
 }
 EXPORT_SYMBOL_GPL(blk_mq_sched_dispatch_requests);
@@ -247,8 +251,8 @@ int blk_mq_sched_init_hctx(struct request_queue *q, struct blk_mq_hw_ctx *hctx,
 	if (!e || !e->uses_mq)
 		return 0;
 
-	if (e->type->ops.mq.init_hctx) {
-		ret = e->type->ops.mq.init_hctx(hctx, hctx_idx);
+	if (e->type->mq.init_hctx) {
+		ret = e->type->mq.init_hctx(hctx, hctx_idx);
 		if (ret)
 			hctx->sched_data = NULL;
 	}
@@ -264,8 +268,8 @@ void blk_mq_sched_exit_hctx(struct request_queue *q, struct blk_mq_hw_ctx *hctx,
 	if (!e || !e->uses_mq)
 		return;
 
-	if (e->type->ops.mq.exit_hctx && hctx->sched_data) {
-		e->type->ops.mq.exit_hctx(hctx, hctx_idx);
+	if (e->type->mq.exit_hctx && hctx->sched_data) {
+		e->type->mq.exit_hctx(hctx, hctx_idx);
 		hctx->sched_data = NULL;
 	}
 }
@@ -279,13 +283,13 @@ int blk_mq_init_sched(struct request_queue *q, struct elevator_type *e)
 	if (!e)
 		return 0;
 
-	ret = e->ops.mq.init_sched(q, e);
+	ret = e->mq.init_sched(q, e);
 	if (ret)
 		return ret;
 
-	if (e->ops.mq.init_hctx) {
+	if (e->mq.init_hctx) {
 		queue_for_each_hw_ctx(q, hctx, i) {
-			ret = e->ops.mq.init_hctx(hctx, i);
+			ret = e->mq.init_hctx(hctx, i);
 			if (ret)
 				goto err;
 		}
@@ -310,16 +314,16 @@ void blk_mq_exit_sched(struct request_queue *q, struct elevator_queue *e)
 	if (!e)
 		return;
 
-	if (e->type->ops.mq.exit_hctx) {
+	if (e->type->mq.exit_hctx) {
 		queue_for_each_hw_ctx(q, hctx, i) {
 			if (hctx->sched_data) {
-				e->type->ops.mq.exit_hctx(hctx, i);
+				e->type->mq.exit_hctx(hctx, i);
 				hctx->sched_data = NULL;
 			}
 		}
 	}
-	if (e->type->ops.mq.exit_sched)
-		e->type->ops.mq.exit_sched(e);
+	if (e->type->mq.exit_sched)
+		e->type->mq.exit_sched(e);
 
 	if (e->registered)
 		elv_unregister_queue(q);

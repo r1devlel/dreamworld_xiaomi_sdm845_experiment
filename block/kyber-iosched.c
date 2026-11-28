@@ -28,7 +28,6 @@
 #include "blk-mq.h"
 #include "blk-mq-sched.h"
 #include "blk-mq-tag.h"
-#include "blk-stat.h"
 
 /* Scheduling domains. */
 enum {
@@ -102,11 +101,9 @@ struct kyber_hctx_data {
 
 static int rq_sched_domain(const struct request *rq)
 {
-	unsigned int op = rq->cmd_flags;
-
-	if ((op & REQ_OP_MASK) == REQ_OP_READ)
+	if (rq_data_dir(rq) == READ)
 		return KYBER_READ;
-	else if ((op & REQ_OP_MASK) == REQ_OP_WRITE && !!(op & REQ_SYNC))
+	else if (rq_data_dir(rq) == WRITE && (rq->cmd_flags & REQ_SYNC))
 		return KYBER_SYNC_WRITE;
 	else
 		return KYBER_OTHER;
