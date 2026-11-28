@@ -46,6 +46,20 @@ config IOSCHED_ZEN
 	  FCFS, dispatches are back-inserted, deadlines ensure fairness.
 	  Should work best with devices where there is no travel delay.
 
+config MQ_IOSCHED_DEADLINE
+	tristate "MQ deadline I/O scheduler"
+	default n
+	---help---
+	  MQ version of the deadline IO scheduler, using the blk-mq
+	  scheduling framework.
+
+config MQ_IOSCHED_KYBER
+	tristate "Kyber I/O scheduler"
+	default n
+	---help---
+	  The Kyber I/O scheduler is a low-overhead scheduler suitable for
+	  multiqueue and other fast devices.
+
 config IOSCHED_BFQ
 	tristate "BFQ I/O scheduler"
 	default n
@@ -81,6 +95,12 @@ choice
 	config DEFAULT_ZEN
 		bool "ZEN" if IOSCHED_ZEN=y
 
+	config DEFAULT_MQ_DEADLINE
+		bool "MQ deadline" if MQ_IOSCHED_DEADLINE=y
+
+	config DEFAULT_KYBER
+		bool "Kyber" if MQ_IOSCHED_KYBER=y
+
 	config DEFAULT_BFQ
 		bool "BFQ" if IOSCHED_BFQ=y
 
@@ -92,6 +112,8 @@ config DEFAULT_IOSCHED
 	default "cfq" if DEFAULT_CFQ
 	default "noop" if DEFAULT_NOOP
 	default "zen" if DEFAULT_ZEN
+	default "mq-deadline" if DEFAULT_MQ_DEADLINE
+	default "kyber" if DEFAULT_KYBER
 	default "bfq" if DEFAULT_BFQ
 
 endmenu

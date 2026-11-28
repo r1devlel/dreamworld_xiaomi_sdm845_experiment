@@ -47,6 +47,9 @@ static LIST_HEAD(elv_list);
 /*
  * Merge hash stuff.
  */
+extern int blk_mq_init_sched(struct request_queue *, struct elevator_type *);
+extern void blk_mq_exit_sched(struct request_queue *, struct elevator_queue *);
+
 #define rq_hash_key(rq)		(blk_rq_pos(rq) + blk_rq_sectors(rq))
 
 /*
@@ -57,6 +60,10 @@ static int elv_iosched_allow_bio_merge(struct request *rq, struct bio *bio)
 {
 	struct request_queue *q = rq->q;
 	struct elevator_queue *e = q->elevator;
+
+	if (e->uses_mq)
+		return e->type->ops.mq.allow_merge ?
+			e->type->ops.mq.allow_merge(q, rq, bio) : true;
 
 	if (e->type->ops.elevator_allow_bio_merge_fn)
 		return e->type->ops.elevator_allow_bio_merge_fn(q, rq, bio);
@@ -159,6 +166,7 @@ struct elevator_queue *elevator_alloc(struct request_queue *q,
 	if (unlikely(!eq))
 		return NULL;
 
+	eq->q = q;
 	eq->type = e;
 	kobject_init(&eq->kobj, &elv_ktype);
 	mutex_init(&eq->sysfs_lock);
@@ -224,6 +232,15 @@ int elevator_init(struct request_queue *q, char *name)
 		}
 	}
 
+	if (e->uses_mq) {
+		extern int blk_mq_init_sched(struct request_queue *, struct elevator_type *);
+
+		err = blk_mq_init_sched(q, e);
+		if (err)
+			elevator_put(e);
+		return err;
+	}
+
 	err = e->ops.elevator_init_fn(q, e);
 	if (err)
 		elevator_put(e);
@@ -233,6 +250,14 @@ EXPORT_SYMBOL(elevator_init);
 
 void elevator_exit(struct elevator_queue *e)
 {
+	if (e->uses_mq) {
+		extern void blk_mq_exit_sched(struct request_queue *,
+					      struct elevator_queue *);
+
+		blk_mq_exit_sched(e->q, e);
+		return;
+	}
+
 	mutex_lock(&e->sysfs_lock);
 	if (e->type->ops.elevator_exit_fn)
 		e->type->ops.elevator_exit_fn(e);
@@ -248,13 +273,14 @@ static inline void __elv_rqhash_del(struct request *rq)
 	rq->cmd_flags &= ~REQ_HASHED;
 }
 
-static void elv_rqhash_del(struct request_queue *q, struct request *rq)
+void elv_rqhash_del(struct request_queue *q, struct request *rq)
 {
 	if (ELV_ON_HASH(rq))
 		__elv_rqhash_del(rq);
 }
+EXPORT_SYMBOL_GPL(elv_rqhash_del);
 
-static void elv_rqhash_add(struct request_queue *q, struct request *rq)
+void elv_rqhash_add(struct request_queue *q, struct request *rq)
 {
 	struct elevator_queue *e = q->elevator;
 
@@ -262,6 +288,8 @@ static void elv_rqhash_add(struct request_queue *q, struct request *rq)
 	hash_add(e->hash, &rq->hash, rq_hash_key(rq));
 	rq->cmd_flags |= REQ_HASHED;
 }
+
+EXPORT_SYMBOL_GPL(elv_rqhash_add);
 
 static void elv_rqhash_reposition(struct request_queue *q, struct request *rq)
 {
@@ -413,6 +441,12 @@ int elv_merge(struct request_queue *q, struct request **req, struct bio *bio)
 	struct request *__rq;
 	int ret;
 
+	if (e->uses_mq) {
+		if (e->type->ops.mq.request_merge)
+			return e->type->ops.mq.request_merge(q, req, bio);
+		return ELEVATOR_NO_MERGE;
+	}
+
 	/*
 	 * Levels of merges:
 	 * 	nomerges:  No merges at all attempted
@@ -461,8 +495,8 @@ int elv_merge(struct request_queue *q, struct request **req, struct bio *bio)
  *
  * Returns true if we merged, false otherwise
  */
-static bool elv_attempt_insert_merge(struct request_queue *q,
-				     struct request *rq)
+bool elv_attempt_insert_merge(struct request_queue *q,
+			      struct request *rq)
 {
 	struct request *__rq;
 	bool ret;
@@ -495,13 +529,18 @@ static bool elv_attempt_insert_merge(struct request_queue *q,
 
 	return ret;
 }
+EXPORT_SYMBOL_GPL(elv_attempt_insert_merge);
 
 void elv_merged_request(struct request_queue *q, struct request *rq, int type)
 {
 	struct elevator_queue *e = q->elevator;
 
-	if (e->type->ops.elevator_merged_fn)
+	if (e->uses_mq) {
+		if (e->type->ops.mq.request_merged)
+			e->type->ops.mq.request_merged(q, rq, type);
+	} else if (e->type->ops.elevator_merged_fn) {
 		e->type->ops.elevator_merged_fn(q, rq, type);
+	}
 
 	if (type == ELEVATOR_BACK_MERGE)
 		elv_rqhash_reposition(q, rq);
@@ -515,8 +554,12 @@ void elv_merge_requests(struct request_queue *q, struct request *rq,
 	struct elevator_queue *e = q->elevator;
 	const int next_sorted = next->cmd_flags & REQ_SORTED;
 
-	if (next_sorted && e->type->ops.elevator_merge_req_fn)
+	if (e->uses_mq) {
+		if (e->type->ops.mq.requests_merged)
+			e->type->ops.mq.requests_merged(q, rq, next);
+	} else if (next_sorted && e->type->ops.elevator_merge_req_fn) {
 		e->type->ops.elevator_merge_req_fn(q, rq, next);
+	}
 
 	elv_rqhash_reposition(q, rq);
 
@@ -532,6 +575,9 @@ void elv_bio_merged(struct request_queue *q, struct request *rq,
 			struct bio *bio)
 {
 	struct elevator_queue *e = q->elevator;
+
+	if (e->uses_mq)
+		return;
 
 	if (e->type->ops.elevator_bio_merged_fn)
 		e->type->ops.elevator_bio_merged_fn(q, rq, bio);
@@ -687,6 +733,10 @@ struct request *elv_latter_request(struct request_queue *q, struct request *rq)
 {
 	struct elevator_queue *e = q->elevator;
 
+	if (e->uses_mq)
+		return e->type->ops.mq.next_request ?
+			e->type->ops.mq.next_request(q, rq) : NULL;
+
 	if (e->type->ops.elevator_latter_req_fn)
 		return e->type->ops.elevator_latter_req_fn(q, rq);
 	return NULL;
@@ -695,6 +745,10 @@ struct request *elv_latter_request(struct request_queue *q, struct request *rq)
 struct request *elv_former_request(struct request_queue *q, struct request *rq)
 {
 	struct elevator_queue *e = q->elevator;
+
+	if (e->uses_mq)
+		return e->type->ops.mq.former_request ?
+			e->type->ops.mq.former_request(q, rq) : NULL;
 
 	if (e->type->ops.elevator_former_req_fn)
 		return e->type->ops.elevator_former_req_fn(q, rq);
@@ -706,6 +760,10 @@ int elv_set_request(struct request_queue *q, struct request *rq,
 {
 	struct elevator_queue *e = q->elevator;
 
+	if (e->uses_mq)
+		return e->type->ops.mq.get_rq_priv ?
+			e->type->ops.mq.get_rq_priv(q, rq, bio) : 0;
+
 	if (e->type->ops.elevator_set_req_fn)
 		return e->type->ops.elevator_set_req_fn(q, rq, bio, gfp_mask);
 	return 0;
@@ -715,6 +773,12 @@ void elv_put_request(struct request_queue *q, struct request *rq)
 {
 	struct elevator_queue *e = q->elevator;
 
+	if (e->uses_mq) {
+		if (e->type->ops.mq.put_rq_priv)
+			e->type->ops.mq.put_rq_priv(q, rq);
+		return;
+	}
+
 	if (e->type->ops.elevator_put_req_fn)
 		e->type->ops.elevator_put_req_fn(rq);
 }
@@ -722,6 +786,9 @@ void elv_put_request(struct request_queue *q, struct request *rq)
 int elv_may_queue(struct request_queue *q, int op, int op_flags)
 {
 	struct elevator_queue *e = q->elevator;
+
+	if (e->uses_mq)
+		return ELV_MQUEUE_MAY;
 
 	if (e->type->ops.elevator_may_queue_fn)
 		return e->type->ops.elevator_may_queue_fn(q, op, op_flags);
@@ -738,7 +805,7 @@ void elv_completed_request(struct request_queue *q, struct request *rq)
 	 */
 	if (blk_account_rq(rq)) {
 		q->in_flight[rq_is_sync(rq)]--;
-		if ((rq->cmd_flags & REQ_SORTED) &&
+		if ((rq->cmd_flags & REQ_SORTED) && !e->uses_mq &&
 		    e->type->ops.elevator_completed_req_fn)
 			e->type->ops.elevator_completed_req_fn(q, rq);
 	}
@@ -808,7 +875,7 @@ int elv_register_queue(struct request_queue *q)
 		}
 		kobject_uevent(&e->kobj, KOBJ_ADD);
 		e->registered = 1;
-		if (e->type->ops.elevator_registered_fn)
+		if (!e->uses_mq && e->type->ops.elevator_registered_fn)
 			e->type->ops.elevator_registered_fn(q);
 	}
 	return error;
@@ -917,11 +984,14 @@ static int elevator_switch(struct request_queue *q, struct elevator_type *new_e)
 	spin_unlock_irq(q->queue_lock);
 
 	/* allocate, init and register new elevator */
-	err = new_e->ops.elevator_init_fn(q, new_e);
+	if (new_e->uses_mq)
+		err = blk_mq_init_sched(q, new_e);
+	else
+		err = new_e->ops.elevator_init_fn(q, new_e);
 	if (err)
 		goto fail_init;
 
-	if (registered) {
+	if (registered && !new_e->uses_mq) {
 		err = elv_register_queue(q);
 		if (err)
 			goto fail_register;

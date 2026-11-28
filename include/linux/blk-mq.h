@@ -21,6 +21,7 @@ struct blk_mq_hw_ctx {
 
 	unsigned long		flags;		/* BLK_MQ_F_* flags */
 
+	void			*sched_data;
 	struct request_queue	*queue;
 	struct blk_flush_queue	*fq;
 
@@ -148,11 +149,13 @@ enum {
 	BLK_MQ_F_SG_MERGE	= 1 << 2,
 	BLK_MQ_F_DEFER_ISSUE	= 1 << 4,
 	BLK_MQ_F_BLOCKING	= 1 << 5,
+	BLK_MQ_F_NO_SCHED	= 1 << 6,
 	BLK_MQ_F_ALLOC_POLICY_START_BIT = 8,
 	BLK_MQ_F_ALLOC_POLICY_BITS = 1,
 
 	BLK_MQ_S_STOPPED	= 0,
 	BLK_MQ_S_TAG_ACTIVE	= 1,
+	BLK_MQ_S_SCHED_RESTART	= 2,
 
 	BLK_MQ_MAX_DEPTH	= 10240,
 
@@ -238,6 +241,14 @@ void blk_mq_freeze_queue_start(struct request_queue *q);
 int blk_mq_reinit_tagset(struct blk_mq_tag_set *set);
 
 void blk_mq_update_nr_hw_queues(struct blk_mq_tag_set *set, int nr_hw_queues);
+
+/* used by the blk-mq scheduler backport */
+bool blk_mq_dispatch_rq_list(struct blk_mq_hw_ctx *, struct list_head *);
+bool blk_mq_hctx_has_pending(struct blk_mq_hw_ctx *);
+void blk_mq_flush_busy_ctxs(struct blk_mq_hw_ctx *, struct list_head *);
+void __blk_mq_insert_request(struct blk_mq_hw_ctx *, struct request *, bool);
+void blk_mq_insert_requests(struct blk_mq_hw_ctx *, struct blk_mq_ctx *,
+			    struct list_head *);
 
 /*
  * Driver command data is immediately after the request. So subtract request
