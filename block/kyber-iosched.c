@@ -113,7 +113,6 @@ static struct kyber_queue_data *kyber_queue_data_alloc(struct request_queue *q)
 {
 	struct kyber_queue_data *kqd;
 	unsigned int max_tokens;
-	unsigned int shift;
 	int ret = -ENOMEM;
 	int i;
 
@@ -182,7 +181,6 @@ static int kyber_init_sched(struct request_queue *q, struct elevator_type *e)
 static void kyber_exit_sched(struct elevator_queue *e)
 {
 	struct kyber_queue_data *kqd = e->elevator_data;
-	struct request_queue *q = kqd->q;
 	int i;
 
 	for (i = 0; i < KYBER_NUM_DOMAINS; i++)

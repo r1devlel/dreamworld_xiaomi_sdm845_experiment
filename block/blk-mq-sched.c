@@ -200,7 +200,7 @@ void blk_mq_sched_dispatch_requests(struct blk_mq_hw_ctx *hctx)
 	bool did_work = false;
 	LIST_HEAD(rq_list);
 
-	if (unlikely(blk_mq_hctx_stopped(hctx)))
+	if (unlikely(test_bit(BLK_MQ_S_STOPPED, &hctx->state)))
 		return;
 
 	hctx->run++;

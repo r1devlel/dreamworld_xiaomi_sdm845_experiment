@@ -2016,7 +2016,6 @@ void blk_mq_release(struct request_queue *q)
 
 struct request_queue *blk_mq_init_queue(struct blk_mq_tag_set *set)
 {
-	int err;
 	struct request_queue *uninit_q, *q;
 
 	uninit_q = blk_alloc_queue_node(GFP_KERNEL, set->numa_node);
