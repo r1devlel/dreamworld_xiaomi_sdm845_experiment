@@ -62,8 +62,8 @@ static int elv_iosched_allow_bio_merge(struct request *rq, struct bio *bio)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq)
-		return e->type->ops.mq.allow_merge ?
-			e->type->ops.mq.allow_merge(q, rq, bio) : true;
+		return e->type->mq.allow_merge ?
+			e->type->mq.allow_merge(q, rq, bio) : true;
 
 	if (e->type->ops.elevator_allow_bio_merge_fn)
 		return e->type->ops.elevator_allow_bio_merge_fn(q, rq, bio);
@@ -442,8 +442,8 @@ int elv_merge(struct request_queue *q, struct request **req, struct bio *bio)
 	int ret;
 
 	if (e->uses_mq) {
-		if (e->type->ops.mq.request_merge)
-			return e->type->ops.mq.request_merge(q, req, bio);
+		if (e->type->mq.request_merge)
+			return e->type->mq.request_merge(q, req, bio);
 		return ELEVATOR_NO_MERGE;
 	}
 
@@ -536,8 +536,8 @@ void elv_merged_request(struct request_queue *q, struct request *rq, int type)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq) {
-		if (e->type->ops.mq.request_merged)
-			e->type->ops.mq.request_merged(q, rq, type);
+		if (e->type->mq.request_merged)
+			e->type->mq.request_merged(q, rq, type);
 	} else if (e->type->ops.elevator_merged_fn) {
 		e->type->ops.elevator_merged_fn(q, rq, type);
 	}
@@ -555,8 +555,8 @@ void elv_merge_requests(struct request_queue *q, struct request *rq,
 	const int next_sorted = next->cmd_flags & REQ_SORTED;
 
 	if (e->uses_mq) {
-		if (e->type->ops.mq.requests_merged)
-			e->type->ops.mq.requests_merged(q, rq, next);
+		if (e->type->mq.requests_merged)
+			e->type->mq.requests_merged(q, rq, next);
 	} else if (next_sorted && e->type->ops.elevator_merge_req_fn) {
 		e->type->ops.elevator_merge_req_fn(q, rq, next);
 	}
@@ -734,8 +734,8 @@ struct request *elv_latter_request(struct request_queue *q, struct request *rq)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq)
-		return e->type->ops.mq.next_request ?
-			e->type->ops.mq.next_request(q, rq) : NULL;
+		return e->type->mq.next_request ?
+			e->type->mq.next_request(q, rq) : NULL;
 
 	if (e->type->ops.elevator_latter_req_fn)
 		return e->type->ops.elevator_latter_req_fn(q, rq);
@@ -747,8 +747,8 @@ struct request *elv_former_request(struct request_queue *q, struct request *rq)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq)
-		return e->type->ops.mq.former_request ?
-			e->type->ops.mq.former_request(q, rq) : NULL;
+		return e->type->mq.former_request ?
+			e->type->mq.former_request(q, rq) : NULL;
 
 	if (e->type->ops.elevator_former_req_fn)
 		return e->type->ops.elevator_former_req_fn(q, rq);
@@ -761,8 +761,8 @@ int elv_set_request(struct request_queue *q, struct request *rq,
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq)
-		return e->type->ops.mq.get_rq_priv ?
-			e->type->ops.mq.get_rq_priv(q, rq, bio) : 0;
+		return e->type->mq.get_rq_priv ?
+			e->type->mq.get_rq_priv(q, rq, bio) : 0;
 
 	if (e->type->ops.elevator_set_req_fn)
 		return e->type->ops.elevator_set_req_fn(q, rq, bio, gfp_mask);
@@ -774,8 +774,8 @@ void elv_put_request(struct request_queue *q, struct request *rq)
 	struct elevator_queue *e = q->elevator;
 
 	if (e->uses_mq) {
-		if (e->type->ops.mq.put_rq_priv)
-			e->type->ops.mq.put_rq_priv(q, rq);
+		if (e->type->mq.put_rq_priv)
+			e->type->mq.put_rq_priv(q, rq);
 		return;
 	}
 
