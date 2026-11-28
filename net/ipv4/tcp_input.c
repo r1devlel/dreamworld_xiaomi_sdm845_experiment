@@ -948,15 +948,11 @@ static void tcp_notify_skb_loss_event(struct tcp_sock *tp,
 {
 	struct sock *sk = (struct sock *)tp;
 	const struct tcp_congestion_ops *ca_ops = inet_csk(sk)->icsk_ca_ops;
-	struct bbr3 *bbr3 = NULL;
 
 	tp->lost += tcp_skb_pcount(skb);
 
-	if (ca_ops && strncmp(ca_ops->name, "bbr3", 4) == 0) {
-		bbr3 = *(struct bbr3 **)inet_csk_ca(sk);
-		if (bbr3 && bbr3->skb_marked_lost)
-			bbr3->skb_marked_lost(sk, skb);
-	}
+	if (ca_ops && ca_ops->skb_marked_lost)
+		ca_ops->skb_marked_lost(sk, skb);
 }
 
 static void tcp_sum_lost(struct tcp_sock *tp, struct sk_buff *skb)

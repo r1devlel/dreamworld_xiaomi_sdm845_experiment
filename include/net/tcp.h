@@ -1127,7 +1127,9 @@ struct tcp_congestion_ops {
 	void (*pkts_acked)(struct sock *sk, const struct ack_sample *sample);
 	/* override sysctl_tcp_min_tso_segs */
 	u32 (*min_tso_segs)(struct sock *sk);
-	/* override TSO segment goal (optional) */
+	/* override TSO segment count (optional, BBRv2) */
+	u32 (*tso_segs)(struct sock *sk, unsigned int mss_now);
+	/* override TSO segment goal (optional, BBRv3) */
 	u32 (*tso_segs_goal)(struct sock *sk);
 	/* returns the multiplier used in tcp_sndbuf_expand (optional) */
 	u32 (*sndbuf_expand)(struct sock *sk);
@@ -1138,6 +1140,8 @@ struct tcp_congestion_ops {
 	/* get info for inet_diag (optional) */
 	size_t (*get_info)(struct sock *sk, u32 ext, int *attr,
 			   union tcp_cc_info *info);
+	/* react to a specific lost skb (optional) */
+	void (*skb_marked_lost)(struct sock *sk, const struct sk_buff *skb);
 
 	char 		name[TCP_CA_NAME_MAX];
 	struct module 	*owner;

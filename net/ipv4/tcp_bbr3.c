@@ -2318,6 +2318,7 @@ static struct tcp_congestion_ops tcp_bbr_cong_ops __read_mostly = {
 	.tso_segs_goal = bbr_tso_segs_goal,
 	.get_info	= bbr3_get_info,
 	.set_state	= bbr3_set_state,
+	.skb_marked_lost = bbr3_skb_marked_lost,
 };
 
 static int __init bbr3_register(void)
